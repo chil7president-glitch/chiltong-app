@@ -215,7 +215,10 @@ window.HJPDF = (function () {
       return Promise.all([loadImg(sigUrl), loadImg('assets/contract-logo.png')]);
     }).then(function (imgs) {
       var pages = renderClean(doc, imgs[0], imgs[1]);
-      return buildPdf(pages.map(function (c) { return b64(c.toDataURL('image/jpeg', 0.9)); }));
+      var jpegs = pages.map(function (c) { return c.toDataURL('image/jpeg', 0.9); });
+      var out = buildPdf(jpegs.map(b64));
+      out.image = jpegs[0]; // 카카오톡 안처럼 PDF를 못 받는 곳에서 보여줄 그림
+      return out;
     });
   }
 

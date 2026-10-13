@@ -387,6 +387,9 @@
   // ======================================================
   // 시공일 예약 (날짜만 고르고, 시간은 칠통령이 연락해서 정함)
   // ======================================================
+  // 카카오톡·네이버·인스타 등 앱 안 브라우저 (파일 내려받기가 막혀 있어요)
+  var IS_KAKAO = /KAKAOTALK/i.test(navigator.userAgent || '');
+  var IN_APP = /KAKAOTALK|NAVER\(|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(navigator.userAgent || '');
   var BOOK = Object.assign({ leadDays: 7, changeLeadDays: 7, perDay: 1, monthsAhead: 6 }, CFG.BOOKING || {});
   function dayKey(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function dayLabel(key) {
@@ -863,8 +866,13 @@
     return '<div class="screen with-tabbar">' + topbar('시공 계약서') + '<main class="content">' +
       '<div class="done-box"><div class="mark">' + I.ok + '</div><h2>계약이 완료됐어요</h2><p>' + esc(d.name) + '님, 시공일에 맞춰<br>담당자가 다시 연락드릴게요.</p></div>' +
       '<div class="pdf-card"><div class="ic" style="color:var(--gold-t)">' + I.doc.replace('width="22" height="22"', 'width="26" height="26"') + '</div><div class="tx"><b>계약서 PDF</b><small>' + esc(d.fileName) + '</small></div></div>' +
-      '<button type="button" class="btn btn-gold" data-act="pdfSave">' + I.down + '계약서 PDF 받기</button>' +
-      (navigator.canShare ? '<button type="button" class="btn btn-ghost" data-act="pdfShare">' + I.share + ' 카카오톡 등으로 보내기</button>' : '') +
+      (IN_APP ? (d.url ? '<a class="btn btn-gold" href="' + esc(d.download || d.url) + '">' + I.down + '계약서 PDF 받기</a>' +
+          (IS_KAKAO ? '<a class="btn btn-ghost" href="kakaotalk://web/openExternal?url=' + encodeURIComponent(d.url) + '">크롬 · 사파리로 열어서 받기</a>' : '<a class="btn btn-ghost" href="' + esc(d.url) + '" target="_blank" rel="noopener">계약서 PDF 열어보기</a>') +
+          '' + (IS_KAKAO ? '<p class="hint" style="text-align:center;margin:0">안 받아지면 <b>크롬 · 사파리로 열어서 받기</b>를 눌러 주세요.</p>' : '') + ''
+        : '<button type="button" class="btn btn-gold" disabled>' + I.down + (d.sendErr ? 'PDF를 준비하지 못했어요' : 'PDF 준비 중…') + '</button>') +
+        (d.image ? '<button type="button" class="btn btn-ghost" data-act="pdfImg">' + (d.showImg ? '계약서 그림 접기' : '사진으로 저장하기 (그림을 길게 눌러 저장)') + '</button>' + (d.showImg ? '<img class="contract-img" src="' + d.image + '" alt="칠통령 시공 계약서">' : '') : '')
+        : '<button type="button" class="btn btn-gold" data-act="pdfSave">' + I.down + '계약서 PDF 받기</button>') +
+      (!IN_APP && navigator.canShare ? '<button type="button" class="btn btn-ghost" data-act="pdfShare">' + I.share + ' 카카오톡 등으로 보내기</button>' : '') +
       (d.sendErr ? '<div class="callout" role="alert" style="color:var(--err)">' + esc(d.sendErr) + ' <button type="button" class="btn btn-ghost" style="min-height:32px;padding:0 4px" data-act="retrySend">다시 보내기</button></div>' : '') +
       '<section class="card" style="gap:4px"><div class="kv">' + d.rows.map(function (r) { return '<div class="r"><span class="k">' + esc(r[0]) + '</span><span class="v">' + esc(r[1]) + '</span></div>'; }).join('') + '</div>' +
       '<span class="hint" style="margin-top:8px">고객 서명</span><img class="sig-img" src="' + d.sig + '" alt="고객 서명"></section>' +
@@ -958,7 +966,7 @@
       };
       k.sending = false;
       k.done = {
-        no: no, name: doc.name, fileName: fileName, bytes: bytes, sig: sig, record: record, sendErr: '',
+        no: no, name: doc.name, fileName: fileName, bytes: bytes, image: bytes.image || '', url: '', sig: sig, record: record, sendErr: '',
         rows: [['계약번호', no], ['고객명', doc.name], ['연락처', doc.phone], ['아파트', doc.apt + (doc.dongHo ? ' ' + doc.dongHo : '')], ['시공일', doc.workDate || '-'], ['시공제품', c.product], ['색상', doc.color || '-'], ['시공장소', c.places.join(', ')], ['총 금액', HJ.man(c.total)], ['할인', c.discSum ? '- ' + HJ.man(c.discSum) : '없음'], ['최종 금액', HJ.man(c.amount)], ['계약금', HJ.man(c.deposit)], ['잔금', HJ.man(c.balance)], ['계약일', doc.today]]
       };
       render(true);
@@ -975,7 +983,7 @@
     if (!API.ready) { d.sendErr = '아직 서버(구글 시트) 연결 전이라 계약서가 칠통령에 전송되지 않았어요.'; render(); return; }
     d.sendErr = '';
     API.post({ action: 'contract', data: d.record, pdf: bytesToB64(d.bytes), fileName: d.fileName })
-      .then(function () { toast('계약서가 칠통령에 전달됐어요'); })
+      .then(function (j) { d.url = (j && j.url) || ''; d.download = (j && j.download) || ''; toast('계약서가 칠통령에 전달됐어요'); render(); })
       .catch(function () { d.sendErr = '계약서를 칠통령에 보내지 못했어요. 인터넷 연결을 확인하고 다시 보내주세요.'; render(); });
   }
   function pdfBlob() { return new Blob([S.contract.done.bytes], { type: 'application/pdf' }); }
@@ -1296,6 +1304,7 @@
     signContract: signContract,
     retrySend: sendContract,
     newContract: function () { S.contract = newContract(); render(true); },
+    pdfImg: function () { var d = S.contract.done; d.showImg = !d.showImg; render(); },
     pdfSave: function () {
       var url = URL.createObjectURL(pdfBlob()), a = document.createElement('a');
       a.href = url; a.download = S.contract.done.fileName; document.body.appendChild(a); a.click(); a.remove();

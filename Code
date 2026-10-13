@@ -1,0 +1,772 @@
+/**
+ * 칠통령 웹앱 서버 — 구글 시트에 붙여 쓰는 Apps Script
+ *
+ * 하는 일: 상담 신청 · 시공일 예약 · A/S 신청(팀 시공 일정표에 바로 적기) · 계약서(PDF는 드라이브) · 시공 사례(사진은 드라이브) 저장
+ * 설치 방법은 같은 폴더의 설치안내.md 를 보세요.
+ *
+ * 관리자 비밀번호: Apps Script 편집기 → 프로젝트 설정(톱니바퀴) → 스크립트 속성 →
+ *   속성 이름 ADMIN_PASSWORD, 값에 원하는 비밀번호
+ */
+
+var PER_DAY = 30; // 하루에 받을 시공 건수 (사이트 config.js 의 BOOKING.perDay 와 같게 맞춰 주세요)
+var CONTRACT_FOLDER = '칠통령 계약서';
+var PHOTO_FOLDER = '칠통령 사례 사진';
+
+var SHEETS = {
+  consult: ['접수시각', '연락처', '희망 날짜', '서비스', '재료', '색상', '건물', '평수', '시공 공간', '예상 금액', '문의 내용', '우리 집', '입주일'],
+  book: ['예약번호', '접수시각', '시공일', '상태', '이름', '연락처', '아파트', '동', '호', '시공 내용', '견적', '남긴 말', '입주일', '색상', '일정표 칸', '지역', '기사님', '종류', '증상', '사진', '시공 시기', '시공제품', '출입방법', '줄눈 일정', '입주청소 일정', '통화 편한 시간', '고객 수정'],
+  closed: ['날짜', '마감한 시각'],
+  contract: ['계약번호', '작성시각', '고객명', '연락처', '아파트', '동호수', '입주예정일', '시공일', '시공제품', '색상', '시공면적', '시공장소', '곰팡이항균SV', '시공가격 내용', '총 금액(만원)', '할인', '최종 금액(만원)', '계약금(만원)', '잔금(만원)', '입금자명', '결제방법', '후기 페이백(원)', '하자보수(년)', '계약서 PDF'],
+  cases: ['id', '등록일', '아파트', '시공 내용', '색상', '설명', '전 사진', '후 사진', '전 사진 파일', '후 사진 파일']
+};
+var TAB = { consult: '상담신청', book: '예약', closed: '마감일', contract: '계약', cases: '사례' };
+
+// ---------- 들어오는 요청 ----------
+function doGet(e) {
+  var action = (e && e.parameter && e.parameter.action) || '';
+  try {
+    if (action === 'cases') return out({ ok: true, cases: listCases() });
+    if (action === 'schedule') return out(scheduleSummary());
+    if (action === 'ping') return out({ ok: true, at: now() });
+    return out({ ok: false, error: 'unknown' });
+  } catch (err) { return out({ ok: false, error: String(err.message || err) }); }
+}
+
+function doPost(e) {
+  var body = {};
+  try { body = JSON.parse(e.postData.contents || '{}'); } catch (x) { return out({ ok: false, error: 'badjson' }); }
+  var a = body.action;
+  try {
+    if (a === 'consult') return out(addConsult(body.data || {}));
+    if (a === 'book') return out(addBooking(body.data || {}));
+    if (a === 'as') { var asd = body.data || {}; asd.kind = 'AS'; return out(addBooking(asd)); }
+    if (a === 'contract') return out(addContract(body.data || {}, body.pdf, body.fileName));
+    if (a === 'myBookings') return out(myBookings(body.name, body.phone));
+    if (a === 'myUpdate') return out(myUpdate(body.id, body.name, body.phone, body.data || {}));
+    if (a === 'myCancel') return out(myCancel(body.id, body.name, body.phone));
+    if (a === 'checkPassword') return out(checkPw(body.password) ? { ok: true } : { ok: false, error: 'auth' });
+    // 여기부터는 관리자만
+    if (!checkPw(body.password)) return out({ ok: false, error: 'auth' });
+    if (a === 'bookings') { try { syncTechsFromSheet(); } catch (x) {} }
+    if (a === 'bookings') return out({ ok: true, bookings: listBookings(), closed: listClosed(), techs: TECHS.map(function (t) { return { name: t.name, color: t.color, regions: t.regions }; }) });
+    if (a === 'setTech') return out(setTech(body.id, body.tech));
+    if (a === 'setDay') return out(setDay(body.id, body.day));
+    if (a === 'regroup') return out(regroupDay(body.date));
+    if (a === 'setBooking') return out(setBooking(body.id, body.status));
+    if (a === 'setClosed') return out(setClosed(body.date, body.closed));
+    if (a === 'addCase') return out(addCase(body.data || {}));
+    if (a === 'deleteCase') return out(deleteCase(body.id));
+    return out({ ok: false, error: 'unknown' });
+  } catch (err) { return out({ ok: false, error: String(err.message || err) }); }
+}
+
+// ---------- 시공 일정표 (팀이 쓰는 날짜별 일정 시트) ----------
+// 날짜 칸(예: 10-13) 오른쪽으로 고객 한 명당 한 칸씩 적는 일정표에, 홈페이지 예약을 같은 모양으로 바로 적어 넣어요.
+var SCHEDULE = {
+  URL: '',              // 일정표 스프레드시트 주소. 비우면 이 스크립트가 붙어 있는 스프레드시트
+  SHEET: '',            // 일정표 탭 이름. 비우면 모든 탭에서 날짜 칸을 찾아요 (예: '10월', '시공일정')
+  DATE_COLS: 3,         // 날짜가 적힌 칸을 왼쪽 몇 번째 열까지에서 찾을지
+  ROWS_PER_DATE: 2,     // 날짜 칸이 병합돼 있지 않을 때 한 날짜가 쓰는 줄 수
+  LAST_COL: 0,          // 예약을 적을 마지막 열 번호 (0이면 시트에 내용이 있는 마지막 열, 최소 10칸)
+  COLOR: '#6D9EEB',     // 홈페이지로 들어온 예약 칸 배경색 (연한 파랑)
+  CONFIRMED: '#D9EAD3', // 관리자 화면에서 확정하면 바뀌는 배경색 (연두색)
+  AS: '#FCE5CD'         // 홈페이지로 들어온 A/S 신청 칸 배경색 (연한 주황)
+};
+var LEAD_DAYS = 7;    // 고객이 고를 수 있는 가장 빠른 날짜: 오늘부터 며칠 뒤 (사이트 config.js 의 BOOKING.leadDays 와 같게)
+var CHANGE_DAYS = 3;       // 시공일 며칠 전까지 고객이 앱에서 직접 바꾸거나 취소할 수 있는지 (그 뒤로는 전화)
+var CHANGE_LEAD_DAYS = 7;  // 고객이 날짜를 바꿀 때 고를 수 있는 가장 빠른 날짜: 오늘부터 며칠 뒤 (config.js 의 BOOKING.changeLeadDays 와 같게)
+var WAIT_MARK = '(확정 전 · 연락 필요)', OK_MARK = '(예약 확정 · 홈페이지)';
+var AS_WAIT = '(A/S 접수 · 연락 필요)', AS_OK = '(A/S 확정 · 홈페이지)';
+var AS_FOLDER = '칠통령 AS 사진';
+
+// ---------- 기사님 ----------
+// name: 관리자 화면에 보이는 이름, color: 일정표 칸 색,
+// regions: 맡는 지역 — 새 예약의 지역이 여기 있으면 자동으로 이 기사님 색으로 칠해요 (비워 두면 직접 지정)
+var TECHS = [
+  { name: '기사님1', color: '#EA9999', regions: [] },
+  { name: '기사님2', color: '#FFE599', regions: [] },
+  { name: '기사님3', color: '#B6D7A8', regions: [] },
+  { name: '기사님4', color: '#B4A7D6', regions: [] },
+  { name: '기사님5', color: '#F9CB9C', regions: [] }
+];
+function techByName(n) { for (var i = 0; i < TECHS.length; i++) if (TECHS[i].name === n) return TECHS[i]; return null; }
+function techForRegion(region) {
+  if (!region) return null;
+  for (var i = 0; i < TECHS.length; i++) for (var j = 0; j < TECHS[i].regions.length; j++) {
+    var r = TECHS[i].regions[j];
+    if (r && (region.indexOf(r) >= 0 || r.indexOf(region) >= 0)) return TECHS[i];
+  }
+  return null;
+}
+// 지역: 고객이 적은 지역, 없으면 아파트명의 첫 단어 (예: '부천 송내역 푸르지오' → 부천)
+function regionOf(apt, region) {
+  if (region && String(region).trim()) return String(region).trim();
+  return String(apt || '').trim().split(/\s+/)[0] || '';
+}
+// 일정표 칸 글에서 지역 읽기 ('아파트명:' 줄의 첫 단어)
+function regionInText(t) {
+  var m = String(t || '').match(/아파트\s*명\s*[:：]\s*(\S+)/);
+  return m ? m[1] : '';
+}
+// 칸 색 → 기사님 이름. '' = 기사님 없음(하늘색·연두색·흰색), null = 모르는 색이라 그대로 둠
+function techForColor(bg) {
+  bg = String(bg || '').toLowerCase();
+  if (!bg || bg === '#ffffff' || bg === SCHEDULE.COLOR.toLowerCase() || bg === SCHEDULE.CONFIRMED.toLowerCase() || bg === SCHEDULE.AS.toLowerCase()) return '';
+  var c = rgbOf(bg);
+  if (!c) return null;
+  var best = null, bestD = 46; // 일정표 팔레트에서 비슷한 색을 골라도 알아보게 약간의 차이는 허용
+  TECHS.forEach(function (t) {
+    var tc = rgbOf(t.color); if (!tc) return;
+    var dd = Math.sqrt(Math.pow(c[0] - tc[0], 2) + Math.pow(c[1] - tc[1], 2) + Math.pow(c[2] - tc[2], 2));
+    if (dd < bestD) { bestD = dd; best = t.name; }
+  });
+  return best;
+}
+function rgbOf(h) {
+  var m = String(h || '').match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return null;
+  return [parseInt(m[1].substr(0, 2), 16), parseInt(m[1].substr(2, 2), 16), parseInt(m[1].substr(4, 2), 16)];
+}
+
+// 일정표에서 칸 색을 바꾸면 예약 탭의 기사님도 따라 바뀌게 맞춰요
+function syncTechsFromSheet() {
+  var sh = sheet('book'), data = sh.getDataRange().getValues(), head = data[0];
+  var cWhere = head.indexOf('일정표 칸'), cTech = head.indexOf('기사님'), cSt = head.indexOf('상태');
+  if (cWhere < 0 || cTech < 0) return 0;
+  var tabs = {}, changed = 0, ss = scheduleBook();
+  var tabData = function (name) {
+    if (tabs[name] !== undefined) return tabs[name];
+    var t = ss.getSheetByName(name);
+    if (!t || t.getLastRow() < 1) return (tabs[name] = null);
+    var rg = t.getRange(1, 1, t.getLastRow(), Math.max(1, t.getLastColumn()));
+    return (tabs[name] = { sheet: t, bg: rg.getBackgrounds(), notes: rg.getNotes() });
+  };
+  for (var i = 1; i < data.length; i++) {
+    var id = String(data[i][0]), where = String(data[i][cWhere] || '');
+    if (!where || data[i][cSt] === '취소') continue;
+    var p = where.split('!'), td = tabData(p[0]);
+    if (!td) continue;
+    var a1 = td.sheet.getRange(p[1]), r = a1.getRow() - 1, c = a1.getColumn() - 1;
+    if (!(td.notes[r] && String(td.notes[r][c]).indexOf(id) >= 0)) { // 칸이 옮겨졌으면 메모로 다시 찾기
+      r = -1;
+      for (var x = 0; x < td.notes.length && r < 0; x++) for (var y = 0; y < td.notes[x].length; y++) if (String(td.notes[x][y]).indexOf(id) >= 0) { r = x; c = y; break; }
+      if (r < 0) continue;
+      var nw = p[0] + '!' + td.sheet.getRange(r + 1, c + 1).getA1Notation();
+      sh.getRange(i + 1, cWhere + 1).setValue(nw); data[i][cWhere] = nw;
+    }
+    var t = techForColor(td.bg[r][c]);
+    if (t === null || t === String(data[i][cTech] || '')) continue;
+    sh.getRange(i + 1, cTech + 1).setValue(t); data[i][cTech] = t; changed++;
+  }
+  return changed;
+}
+
+// setup() 이 만들어 두는 자동 실행: 일정표에 변경(색 바꾸기 포함)이 생기면 기사님 배정을 맞춰요
+function onSheetChange(e) {
+  clearSummary(); // 일정표를 손으로 고치면 달력의 마감 정보도 새로 계산해요
+  var type = e && e.changeType;
+  if (type && type !== 'EDIT' && type !== 'FORMAT') clearLayout(); // 줄·탭을 넣거나 지우면 날짜 칸 위치도 다시 찾아요
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return;
+  try { syncTechsFromSheet(); } finally { lock.releaseLock(); }
+}
+
+function cellColor(r) {
+  var t = techByName(r['기사님']);
+  if (t) return t.color;
+  if (r['종류'] === 'AS') return SCHEDULE.AS;
+  return r['상태'] === '확정' ? SCHEDULE.CONFIRMED : SCHEDULE.COLOR;
+}
+
+function scheduleBook() { return SCHEDULE.URL ? SpreadsheetApp.openByUrl(SCHEDULE.URL) : SpreadsheetApp.getActive(); }
+function scheduleTabs() {
+  var ss = scheduleBook();
+  if (SCHEDULE.SHEET) { var one = ss.getSheetByName(SCHEDULE.SHEET); if (!one) throw new Error('일정표 탭 "' + SCHEDULE.SHEET + '"을 찾지 못했어요'); return [one]; }
+  var mine = Object.keys(TAB).map(function (k) { return TAB[k]; });
+  return ss.getSheets().filter(function (s) { return mine.indexOf(s.getName()) < 0; });
+}
+
+// 칸 값 → 'yyyy-MM-dd' (날짜가 아니면 '')
+function cellDay(v) {
+  if (v instanceof Date && !isNaN(v)) return Utilities.formatDate(v, 'Asia/Seoul', 'yyyy-MM-dd');
+  var m = String(v || '').trim().match(/^(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*일?(\s*\(.\))?$/);
+  if (!m) return '';
+  var mo = +m[1], da = +m[2];
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return '';
+  var t = new Date(), y = t.getFullYear();
+  if (mo < t.getMonth() + 1 - 3) y += 1; // 연도 없이 적힌 날짜: 몇 달 전 날짜는 내년으로 봐요
+  return y + '-' + ('0' + mo).slice(-2) + '-' + ('0' + da).slice(-2);
+}
+
+// 일정표 전체에서 날짜 칸을 찾아 { 'yyyy-MM-dd': {sheet, row, rows, col} } 로 돌려줘요
+// 탭마다 시트를 한 번씩만 읽어서 빨라요 (날짜가 많아도 탭당 몇 번만 구글 시트를 불러요)
+function scheduleIndex() {
+  var idx = {};
+  scheduleTabs().forEach(function (sh) {
+    var last = sh.getLastRow(), lastCol = sh.getLastColumn();
+    if (last < 1 || lastCol < 1) return;
+    var cols = Math.min(SCHEDULE.DATE_COLS, lastCol);
+    var all = sh.getRange(1, 1, last, Math.max(lastCol, cols + 10)).getValues();
+    var merged = {};
+    sh.getRange(1, 1, last, cols).getMergedRanges().forEach(function (m) { merged[m.getRow() + ',' + m.getColumn()] = m.getNumRows(); });
+    var width = SCHEDULE.LAST_COL || Math.max(lastCol, cols + 10);
+    for (var r = 0; r < all.length; r++) {
+      for (var c = 0; c < cols; c++) {
+        var key = cellDay(all[r][c]);
+        if (!key || idx[key]) continue;
+        var rows = merged[(r + 1) + ',' + (c + 1)] || SCHEDULE.ROWS_PER_DATE;
+        idx[key] = { sheet: sh, row: r + 1, rows: rows, col: c + 2, lastCol: width, vals: all };
+        break;
+      }
+    }
+  });
+  return idx;
+}
+
+// ---------- 빠르게 찾기: 날짜 칸 위치를 저장해 두고 그 칸만 읽어요 ----------
+// 일정표가 길어져도(달이 쌓여도) 예약할 때마다 시트 전체를 읽지 않아서 느려지지 않아요
+var LAYOUT_SEC = 1800; // 날짜 칸 위치를 30분 동안 기억 (줄을 넣거나 지우면 바로 다시 찾아요)
+function layout(fresh) {
+  var cache = CacheService.getScriptCache();
+  if (!fresh) { try { var hit = cache.get('layout'); if (hit) return JSON.parse(hit); } catch (e) {} }
+  var idx = scheduleIndex(), lay = {};
+  Object.keys(idx).forEach(function (k) { var b = idx[k]; lay[k] = [b.sheet.getName(), b.row, b.rows, b.col, b.lastCol]; });
+  try { cache.put('layout', JSON.stringify(lay), LAYOUT_SEC); } catch (e) {}
+  return lay;
+}
+function clearLayout() { try { CacheService.getScriptCache().remove('layout'); } catch (e) {} }
+function toBlock(a, ss) { var sh = (ss || scheduleBook()).getSheetByName(a[0]); return sh ? { sheet: sh, row: a[1], rows: a[2], col: a[3], lastCol: a[4] } : null; }
+// 그 날짜 칸 하나 — 기억해 둔 위치가 맞는지 날짜 글자로 확인하고, 틀리면 다시 찾아요
+function blockAt(day) {
+  var ok = function (b) { return b && cellDay(b.sheet.getRange(b.row, b.col - 1).getValue()) === day; };
+  var a = layout()[day], b = a && toBlock(a);
+  if (ok(b)) return b;
+  a = layout(true)[day]; // 칸이 옮겨졌거나 새 날짜면 한 번만 새로 찾아요
+  b = a && toBlock(a);
+  return b || null;
+}
+
+function blockRange(b) {
+  var lastCol = b.lastCol || SCHEDULE.LAST_COL || Math.max(b.sheet.getLastColumn(), b.col + 9);
+  return b.sheet.getRange(b.row, b.col, b.rows, lastCol - b.col + 1);
+}
+// 이미 읽어 둔 값으로 그 날짜 칸의 내용 (시트를 다시 부르지 않음)
+function blockValues(b) {
+  var out = [];
+  for (var r = b.row - 1; r < b.row - 1 + b.rows; r++) {
+    var row = (b.vals && b.vals[r]) || [];
+    var line = [];
+    for (var c = b.col - 1; c < b.lastCol; c++) line.push(row[c] === undefined ? '' : row[c]);
+    out.push(line);
+  }
+  return out;
+}
+function usedCount(vals) {
+  var n = 0;
+  vals.forEach(function (row) { row.forEach(function (v) { if (String(v).trim() !== '') n++; }); });
+  return n;
+}
+
+function bookingText(d, id) {
+  var dongHo = (d.dong || '') + (d.dong && d.ho ? '-' : '') + (d.ho || '');
+  if (d.kind === 'AS') {
+    return [
+      '[AS] 홈페이지 신청', '',
+      '아파트명: ' + (d.region && String(d.apt || '').indexOf(d.region) !== 0 ? d.region + ' ' : '') + (d.apt || ''),
+      '성함: ' + (d.name || '') + ' 님',
+      '동호수: ' + dongHo,
+      '번호: ' + (d.phone || ''),
+      '증상: ' + (d.symptom || ''),
+      d.memo ? '내용: ' + d.memo : '',
+      d.when ? '시공 시기: ' + d.when : '',
+      d.photoCount ? '사진 ' + d.photoCount + '장 (예약 탭)' : '',
+      '',
+      AS_WAIT
+    ].filter(function (l, i, a) { return !(l === '' && (i === 0 || a[i - 1] === '')); }).join('\n');
+  }
+  return [
+    '홈페이지 예약',
+    '',
+    '아파트명: ' + (d.region && String(d.apt || '').indexOf(d.region) !== 0 ? d.region + ' ' : '') + (d.apt || ''),
+    '성함: ' + (d.name || '') + ' 님',
+    '동호수: ' + dongHo,
+    '번호: ' + (d.phone || ''),
+    '제품: ' + (d.product || ''),
+    '색상: ' + (d.color || ''),
+    '출입방법: ' + (d.access || ''),
+    d.spots ? '시공공간: ' + d.spots : '',
+    d.julnun ? '줄눈 시공: ' + d.julnun : '',
+    d.clean ? '입주청소: ' + d.clean : '',
+    d.callTime ? '통화: ' + d.callTime : '',
+    d.memo ? '남긴 말: ' + d.memo : '',
+    '',
+    WAIT_MARK
+  ].filter(function (l, i, a) { return !(l === '' && (i === 0 || a[i - 1] === '')); }).join('\n');
+}
+
+function scheduleSummary(fresh) {
+  var cache = CacheService.getScriptCache();
+  if (!fresh) { var hit = cache.get('summary'); if (hit) return JSON.parse(hit); }
+  var counts = {}, lay = {};
+  try { lay = layout(); } catch (e) { lay = {}; }
+  var today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  // 오늘 이후 날짜 칸만, 탭마다 그 줄 범위만 한 번에 읽어요 (지난 달 칸은 읽지 않아요)
+  var byTab = {};
+  Object.keys(lay).forEach(function (k) {
+    if (k < today) return;
+    var a = lay[k], t = byTab[a[0]] || (byTab[a[0]] = { top: a[1], bottom: a[1] + a[2] - 1, right: a[4], days: [] });
+    t.top = Math.min(t.top, a[1]); t.bottom = Math.max(t.bottom, a[1] + a[2] - 1); t.right = Math.max(t.right, a[4]); t.days.push(k);
+  });
+  var ss = Object.keys(byTab).length ? scheduleBook() : null;
+  Object.keys(byTab).forEach(function (name) {
+    var t = byTab[name], sh = ss.getSheetByName(name);
+    if (!sh) return;
+    var vals = sh.getRange(t.top, 1, t.bottom - t.top + 1, t.right).getValues();
+    t.days.forEach(function (k) {
+      var a = lay[k];
+      counts[k] = usedCount(blockValues({ row: a[1] - t.top + 1, rows: a[2], col: a[3], lastCol: a[4], vals: vals }));
+    });
+  });
+  // 일정표에 날짜 칸이 없는 예약도 세어 둬요
+  rows('book').forEach(function (r) {
+    if (r['상태'] === '취소' || r['일정표 칸'] || !r['시공일']) return;
+    var d = dateStr(r['시공일']);
+    counts[d] = (counts[d] || 0) + 1;
+  });
+  var res = { ok: true, counts: counts, closed: listClosed() };
+  try { cache.put('summary', JSON.stringify(res), 600); } catch (e) {} // 10분 동안은 저장해 둔 결과로 바로 답해요 (예약·시트 수정이 있으면 바로 새로 계산)
+  return res;
+}
+function clearSummary() { try { CacheService.getScriptCache().remove('summary'); } catch (e) {} }
+
+// 날짜 칸 안의 첫 빈칸(위 줄 왼쪽부터)에 예약을 적어요. 적은 칸 주소를 돌려줘요
+function placeInSchedule(d, id, idx) {
+  var b = idx ? idx[d.day] : blockAt(d.day);
+  if (!b) return { where: '', reason: 'nodate' };
+  var rg = blockRange(b), vals = rg.getValues();
+  if (usedCount(vals) >= PER_DAY) return { where: '', reason: 'full' };
+  for (var r = 0; r < vals.length; r++) {
+    for (var c = 0; c < vals[r].length; c++) {
+      if (String(vals[r][c]).trim() !== '') continue;
+      var cell = rg.getCell(r + 1, c + 1);
+      var tech = techByName(d.tech);
+      cell.setValue(bookingText(d, id)).setBackground(tech ? tech.color : (d.kind === 'AS' ? SCHEDULE.AS : SCHEDULE.COLOR)).setWrap(true)
+        .setVerticalAlignment('middle').setHorizontalAlignment('center').setNote((d.kind === 'AS' ? '홈페이지 A/S ' : '홈페이지 예약 ') + id);
+      return { where: b.sheet.getName() + '!' + cell.getA1Notation() };
+    }
+  }
+  return { where: '', reason: 'full' };
+}
+
+function addBooking(d) {
+  var noDay = d.kind === 'AS' && !d.day; // A/S는 고객이 날짜를 고르지 않아요 — 관리자 화면에서 칠통령이 정해요
+  if (!noDay && !/^\d{4}-\d{2}-\d{2}$/.test(d.day || '')) return { ok: false, error: 'date' };
+  if (!d.name || String(d.phone || '').replace(/\D/g, '').length < 10) return { ok: false, error: 'missing' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    if (!noDay && listClosed().indexOf(d.day) >= 0) return { ok: false, error: 'full' };
+    var id = (d.kind === 'AS' ? 'A' : 'B') + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyMMddHHmmss') + Math.floor(Math.random() * 90 + 10);
+    var photoUrls = [];
+    (d.photos || []).slice(0, 3).forEach(function (p, i) { try { photoUrls.push(savePhoto(p, id + '-' + (i + 1) + '.jpg', AS_FOLDER).url); } catch (x) {} });
+    d.photoCount = photoUrls.length;
+    d.region = regionOf(d.apt, d.region);
+    var auto = techForRegion(d.region);
+    d.tech = auto ? auto.name : '';
+    var idx = {}, placed = { where: '' };
+    if (!noDay) { var blk = blockAt(d.day); if (blk) idx[d.day] = blk; }
+    if (noDay) {
+      // 일정표에는 아직 적지 않아요
+    } else if (idx[d.day]) {
+      placed = placeInSchedule(d, id, idx);
+      if (placed.reason === 'full') return { ok: false, error: 'full' };
+    } else {
+      // 일정표에 그 날짜 칸이 아직 없으면 예약 탭에만 적고, 건수로 마감을 판단해요
+      var s = scheduleSummary(true);
+      if ((s.counts[d.day] || 0) >= PER_DAY) return { ok: false, error: 'full' };
+    }
+    clearSummary();
+    sheet('book').appendRow([id, now(), d.day ? d.day : '', '접수', d.name, txt(d.phone), d.apt || '', txt(d.dong), txt(d.ho), (d.services || []).join(', '), d.quote || '', d.memo || '', d.moveIn || '', d.color || '', placed.where || '', d.region, d.tech, d.kind === 'AS' ? 'AS' : '시공', d.symptom || '', photoUrls.join(' '), d.when || '', d.product || '', d.access || '', txt(d.julnun), txt(d.clean), d.callTime || '', '']);
+    return { ok: true, id: id };
+  } finally { lock.releaseLock(); }
+}
+
+function listBookings() {
+  return rows('book').map(function (r) {
+    return {
+      id: String(r['예약번호']), day: dateStr(r['시공일']), status: r['상태'] || '접수', name: r['이름'], phone: String(r['연락처']),
+      apt: r['아파트'], dong: String(r['동'] || ''), ho: String(r['호'] || ''), services: String(r['시공 내용'] || '').split(', ').filter(String),
+      quote: r['견적'], memo: r['남긴 말'], created: String(r['접수시각']), cell: r['일정표 칸'] || '',
+      region: r['지역'] || regionOf(r['아파트']), tech: r['기사님'] || '',
+      kind: r['종류'] === 'AS' ? 'AS' : '', symptom: r['증상'] || '', when: r['시공 시기'] || '', photos: String(r['사진'] || '').split(' ').filter(String),
+      product: r['시공제품'] || '', color: r['색상'] || '', access: r['출입방법'] || '', julnun: r['줄눈 일정'] || '', clean: r['입주청소 일정'] || '', callTime: r['통화 편한 시간'] || '', edited: r['고객 수정'] || ''
+    };
+  });
+}
+
+// 예약 탭에 적어 둔 주소로 일정표 칸을 찾아요. 누군가 칸을 옮겼으면(메모가 다르면) null
+function scheduleCell(where, id, day) {
+  if (where) {
+    var p = String(where).split('!'), sh = scheduleBook().getSheetByName(p[0]);
+    if (sh) { var cell = sh.getRange(p[1]); if (String(cell.getNote()).indexOf(id) >= 0) return cell; }
+  }
+  if (!day) return null;
+  var b = blockAt(day);   // 칸이 옮겨졌으면 그 날짜 칸들의 메모에서 다시 찾아요
+  if (!b) return null;
+  var rg = blockRange(b), notes = rg.getNotes();
+  for (var i = 0; i < notes.length; i++) for (var j = 0; j < notes[i].length; j++)
+    if (String(notes[i][j]).indexOf(id) >= 0) return rg.getCell(i + 1, j + 1);
+  return null;
+}
+
+// 예약 탭 한 줄 → 일정표 칸에 적을 내용
+function rowToRec(r, day) {
+  return { day: day != null ? day : dateStr(r['시공일']), name: r['이름'], phone: String(r['연락처']), apt: r['아파트'], dong: String(r['동'] || ''), ho: String(r['호'] || ''),
+    memo: r['남긴 말'], color: r['색상'], region: r['지역'], tech: r['기사님'], kind: r['종류'] === 'AS' ? 'AS' : '', symptom: r['증상'], when: r['시공 시기'],
+    photoCount: String(r['사진'] || '').split(' ').filter(String).length,
+    product: r['시공제품'], access: r['출입방법'], julnun: r['줄눈 일정'], clean: r['입주청소 일정'], callTime: r['통화 편한 시간'] };
+}
+
+function setBooking(id, status) {
+  if (['접수', '확정', '취소'].indexOf(status) < 0) return { ok: false, error: 'status' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet('book'), data = sh.getDataRange().getValues(), head = data[0];
+    var cWhere = head.indexOf('일정표 칸') + 1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) !== String(id)) continue;
+      var r = {}; head.forEach(function (h, j) { r[h] = data[i][j]; });
+      var cell = scheduleCell(r['일정표 칸'], id, dateStr(r['시공일']));
+      if (status === '취소') {
+        if (cell) cell.clearContent().setBackground(null).clearNote(); // 칸을 비워서 그날 자리가 다시 생겨요
+        if (cWhere) sh.getRange(i + 1, cWhere).setValue('');
+      } else {
+        if (!cell && !r['일정표 칸']) { // 취소했다 되돌리면 다시 적어요
+          var d = rowToRec(r);
+          var placed = placeInSchedule(d, id);
+          if (placed.reason === 'full') return { ok: false, error: 'full' };
+          if (cWhere) sh.getRange(i + 1, cWhere).setValue(placed.where || '');
+          cell = scheduleCell(placed.where, id);
+        }
+        if (cell) {
+          var t = String(cell.getValue());
+          r['상태'] = status;
+          if (status === '확정') cell.setValue(t.replace(WAIT_MARK, OK_MARK).replace(AS_WAIT, AS_OK)).setBackground(cellColor(r));
+          else cell.setValue(t.replace(OK_MARK, WAIT_MARK).replace(AS_OK, AS_WAIT)).setBackground(cellColor(r));
+        }
+      }
+      sh.getRange(i + 1, 4).setValue(status);
+      clearSummary();
+      return { ok: true };
+    }
+    return { ok: false, error: 'notfound' };
+  } finally { lock.releaseLock(); }
+}
+
+// A/S 방문 날짜 정하기 (관리자) → 그 날짜 줄 빈칸에 적어요. 날짜를 바꾸면 예전 칸은 비워요
+function setDay(id, day) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) return { ok: false, error: 'date' };
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet('book'), data = sh.getDataRange().getValues(), head = data[0];
+    var cDay = head.indexOf('시공일') + 1, cWhere = head.indexOf('일정표 칸') + 1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) !== String(id)) continue;
+      var r = {}; head.forEach(function (h, j) { r[h] = data[i][j]; });
+      var d = rowToRec(r, day);
+      var oldDay = r['시공일'] ? dateStr(r['시공일']) : '';
+      var old = scheduleCell(r['일정표 칸'], id, oldDay);
+      if (old && oldDay === day) return { ok: true, cell: String(r['일정표 칸']) }; // 이미 그 날짜에 적혀 있어요
+      var placed = placeInSchedule(d, id);
+      if (placed.reason === 'full') return { ok: false, error: 'full' };
+      if (old) old.clearContent().setBackground(null).clearNote(); // 예전 날짜 칸은 비워요
+      sh.getRange(i + 1, cDay).setValue(txt(day));
+      if (cWhere) sh.getRange(i + 1, cWhere).setValue(placed.where || '');
+      clearSummary();
+      return { ok: true, cell: placed.where || '' };
+    }
+    return { ok: false, error: 'notfound' };
+  } finally { lock.releaseLock(); }
+}
+
+// 기사님 지정 → 일정표 칸을 그 기사님 색으로
+function setTech(id, name) {
+  if (name && !techByName(name)) return { ok: false, error: 'tech' };
+  var sh = sheet('book'), data = sh.getDataRange().getValues(), head = data[0];
+  var cTech = head.indexOf('기사님') + 1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== String(id)) continue;
+    var r = {}; head.forEach(function (h, j) { r[h] = data[i][j]; });
+    r['기사님'] = name || '';
+    sh.getRange(i + 1, cTech).setValue(r['기사님']);
+    var cell = scheduleCell(r['일정표 칸'], id, dateStr(r['시공일']));
+    if (cell && r['상태'] !== '취소') cell.setBackground(cellColor(r));
+    return { ok: true };
+  }
+  return { ok: false, error: 'notfound' };
+}
+
+// 그 날짜 칸들을 지역끼리 붙도록 다시 늘어놓아요 (칸 색·글자 서식·메모는 그대로 옮겨요)
+function regroupDay(day) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var b = blockAt(day);
+    if (!b) return { ok: false, error: 'nodate' };
+    var rg = blockRange(b), vals = rg.getValues(), nR = vals.length, nC = vals[0].length;
+    var cells = [], order = [], groups = {};
+    for (var i = 0; i < nR; i++) for (var j = 0; j < nC; j++) {
+      if (String(vals[i][j]).trim() === '') continue;
+      var reg = regionInText(vals[i][j]);
+      var key = reg || '~기타';
+      if (!groups[key]) { groups[key] = []; if (reg) order.push(key); }
+      groups[key].push([i, j]);
+    }
+    if (groups['~기타']) order.push('~기타');
+    order.forEach(function (k) { cells = cells.concat(groups[k]); });
+    var before = [];
+    for (var a = 0; a < nR; a++) for (var c = 0; c < nC; c++) if (String(vals[a][c]).trim() !== '') before.push([a, c]);
+    if (JSON.stringify(before) === JSON.stringify(cells)) return { ok: true, moved: 0 };
+    var notes = rg.getNotes();
+    var ss = scheduleBook(), tmp = ss.insertSheet('_정리중_' + Date.now());
+    try {
+      rg.copyTo(tmp.getRange(1, 1));                 // 원래 칸들을 임시 탭에 복사
+      rg.clear();                                    // 날짜 칸들을 비우고
+      var newNotes = [];
+      for (var x = 0; x < nR; x++) { newNotes.push([]); for (var y = 0; y < nC; y++) newNotes[x].push(''); }
+      cells.forEach(function (src, k) {               // 지역 순서대로 왼쪽 위부터 다시 채우기
+        var tr = Math.floor(k / nC), tc = k % nC;
+        tmp.getRange(src[0] + 1, src[1] + 1).copyTo(rg.getCell(tr + 1, tc + 1));
+        newNotes[tr][tc] = notes[src[0]][src[1]] || '';
+      });
+      rg.setNotes(newNotes);
+    } finally { ss.deleteSheet(tmp); }
+    // 예약 탭의 칸 주소도 새 자리로 고쳐요
+    var sh = sheet('book'), data = sh.getDataRange().getValues(), cWhere = data[0].indexOf('일정표 칸') + 1;
+    var nn = rg.getNotes(), where = {};
+    for (var p = 0; p < nR; p++) for (var q = 0; q < nC; q++) {
+      var m = String(nn[p][q]).match(/홈페이지 (?:예약|A\/S) ([AB]\d+)/);
+      if (m) where[m[1]] = b.sheet.getName() + '!' + rg.getCell(p + 1, q + 1).getA1Notation();
+    }
+    for (var w = 1; w < data.length; w++) if (where[String(data[w][0])] && cWhere) sh.getRange(w + 1, cWhere).setValue(where[String(data[w][0])]);
+    clearSummary();
+    return { ok: true, moved: cells.length };
+  } finally { lock.releaseLock(); }
+}
+
+function listClosed() { return rows('closed').map(function (r) { return dateStr(r['날짜']); }); }
+
+function setClosed(date, closed) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return { ok: false, error: 'date' };
+  var sh = sheet('closed'), data = sh.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) if (dateStr(data[i][0]) === date) sh.deleteRow(i + 1);
+  if (closed) sh.appendRow([txt(date), now()]);
+  clearSummary();
+  return { ok: true };
+}
+
+// ---------- 상담 · 계약 ----------
+function addConsult(d) {
+  sheet('consult').appendRow([now(), txt(d.phone), d.date || '상담 때 정하기', (d.services || []).join(', '), d.material || '', d.color || '', d.build || '', d.size || '', (d.spots || []).join(', '), d.estimate || '', d.memo || '', d.home || '', d.moveIn || '']);
+  return { ok: true };
+}
+
+function addContract(d, pdfB64, fileName) {
+  var url = '', fileId = '';
+  if (pdfB64) {
+    var blob = Utilities.newBlob(Utilities.base64Decode(pdfB64), 'application/pdf', fileName || (d.no + '.pdf'));
+    var file = folder(CONTRACT_FOLDER).createFile(blob);
+    url = file.getUrl(); fileId = file.getId();
+    // 카카오톡 안에서도 고객이 열어볼 수 있게, 링크를 아는 사람만 볼 수 있게 열어 둬요
+    try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) {}
+  }
+  sheet('contract').appendRow([d.no, now(), d.name, txt(d.phone), d.apt, d.dongHo, d.moveIn, d.workDate, d.product, d.color, d.area, d.places, d.sv, d.priceMemo, d.total, d.discount, d.amount, d.deposit, d.balance, d.payer, d.pay, d.payback, d.asYears, url]);
+  return { ok: true, url: url, download: fileId ? 'https://drive.google.com/uc?export=download&id=' + fileId : '' };
+}
+
+// ---------- 시공 사례 ----------
+function listCases() {
+  return rows('cases').map(function (r) {
+    return { id: String(r['id']), date: String(r['등록일']), apt: r['아파트'], svcs: String(r['시공 내용'] || '').split(', ').filter(String), color: r['색상'], memo: r['설명'], before: r['전 사진'], after: r['후 사진'] };
+  }).reverse();
+}
+
+function addCase(d) {
+  if (!d.apt || !d.after) return { ok: false, error: 'missing' };
+  var id = 'C' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyMMddHHmmss');
+  var before = d.before ? savePhoto(d.before, id + '-before.jpg') : null;
+  var after = savePhoto(d.after, id + '-after.jpg');
+  sheet('cases').appendRow([id, Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy.MM.dd'), d.apt, (d.svcs || []).join(', '), d.color || '', d.memo || '', before ? before.url : '', after.url, before ? before.id : '', after.id]);
+  return { ok: true, id: id };
+}
+
+function deleteCase(id) {
+  var sh = sheet('cases'), data = sh.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(id)) {
+      [data[i][8], data[i][9]].forEach(function (fid) { if (fid) try { DriveApp.getFileById(fid).setTrashed(true); } catch (x) {} });
+      sh.deleteRow(i + 1);
+      return { ok: true };
+    }
+  }
+  return { ok: false, error: 'notfound' };
+}
+
+function savePhoto(dataUrl, name, folderName) {
+  var m = String(dataUrl).match(/^data:(image\/\w+);base64,(.+)$/);
+  if (!m) throw new Error('photo');
+  var file = folder(folderName || PHOTO_FOLDER).createFile(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name));
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  return { id: file.getId(), url: 'https://lh3.googleusercontent.com/d/' + file.getId() };
+}
+
+// ---------- 고객이 직접: 내 예약 보기 · 바꾸기 · 취소 (이름 + 연락처가 맞아야 해요) ----------
+function digits(v) { return String(v || '').replace(/\D/g, ''); }
+function sameOwner(r, name, phone) {
+  return digits(phone).length >= 10 && digits(r['연락처']) === digits(phone) && String(r['이름'] || '').replace(/\s/g, '') === String(name || '').replace(/\s/g, '');
+}
+function daysFromToday(day) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day || ''))) return 9999; // 날짜가 아직 없으면(A/S 일정 미정) 언제든 고칠 수 있어요
+  var t = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd').split('-'), p = String(day).split('-');
+  return Math.round((Date.UTC(+p[0], +p[1] - 1, +p[2]) - Date.UTC(+t[0], +t[1] - 1, +t[2])) / 86400000);
+}
+function publicBooking(r) { // 고객에게 보여줄 것만 (기사님 배정은 빼요)
+  return { id: String(r['예약번호']), day: dateStr(r['시공일']), status: r['상태'] || '접수', name: r['이름'], phone: String(r['연락처']),
+    region: r['지역'] || '', apt: r['아파트'] || '', dong: String(r['동'] || ''), ho: String(r['호'] || ''), memo: r['남긴 말'] || '',
+    product: r['시공제품'] || '', color: r['색상'] || '', access: r['출입방법'] || '', julnun: r['줄눈 일정'] || '', clean: r['입주청소 일정'] || '', callTime: r['통화 편한 시간'] || '',
+    kind: r['종류'] === 'AS' ? 'AS' : '', symptom: r['증상'] || '', when: r['시공 시기'] || '', photos: String(r['사진'] || '').split(' ').filter(String),
+    locked: daysFromToday(dateStr(r['시공일'])) < CHANGE_DAYS };
+}
+function myBookings(name, phone) {
+  if (!name || digits(phone).length < 10) return { ok: false, error: 'missing' };
+  var list = rows('book').filter(function (r) {
+    if (!sameOwner(r, name, phone) || r['상태'] === '취소') return false;
+    if (r['종류'] === 'AS') return !r['시공일'] || daysFromToday(dateStr(r['시공일'])) >= 0; // A/S는 날짜 미정도 보여요
+    return r['시공일'] && daysFromToday(dateStr(r['시공일'])) >= 0;
+  }).map(publicBooking);
+  return { ok: true, bookings: list, changeDays: CHANGE_DAYS };
+}
+function myUpdate(id, name, phone, nd) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh = sheet('book'), data = sh.getDataRange().getValues(), head = data[0];
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) !== String(id)) continue;
+      var r = {}; head.forEach(function (h, j) { r[h] = data[i][j]; });
+      if (!sameOwner(r, name, phone)) return { ok: false, error: 'auth' };
+      if (r['상태'] === '취소') return { ok: false, error: 'cancelled' };
+      var isAS = r['종류'] === 'AS', oldDay = r['시공일'] ? dateStr(r['시공일']) : '';
+      if (daysFromToday(oldDay) < CHANGE_DAYS) return { ok: false, error: 'locked' };
+      var day = isAS ? oldDay : (nd.day || oldDay), moved = day !== oldDay; // A/S 방문 날짜는 칠통령이 정해요
+      if (moved) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || daysFromToday(day) < CHANGE_LEAD_DAYS) return { ok: false, error: 'lead' };
+        if (listClosed().indexOf(day) >= 0) return { ok: false, error: 'full' };
+      }
+      // 고칠 수 있는 칸만 바꿔요
+      var map = isAS ? { symptom: '증상', memo: '남긴 말', when: '시공 시기', region: '지역', apt: '아파트', dong: '동', ho: '호' }
+        : { product: '시공제품', color: '색상', access: '출입방법', julnun: '줄눈 일정', clean: '입주청소 일정', callTime: '통화 편한 시간', memo: '남긴 말', region: '지역', apt: '아파트', dong: '동', ho: '호' };
+      var changed = [];
+      if (isAS && Array.isArray(nd.photos)) { // 남길 사진(주소) + 새로 올린 사진(data:)
+        var oldPh = String(r['사진'] || '').split(' ').filter(String), keep = [], added = 0;
+        nd.photos.slice(0, 3).forEach(function (p, n) {
+          if (oldPh.indexOf(p) >= 0) keep.push(p);
+          else if (/^data:image\//.test(String(p))) { try { keep.push(savePhoto(p, id + '-e' + Date.now() + n + '.jpg', AS_FOLDER).url); added++; } catch (x) {} }
+        });
+        var newPh = keep.join(' '), cPh = head.indexOf('사진');
+        if (cPh >= 0 && newPh !== oldPh.join(' ')) { r['사진'] = newPh; sh.getRange(i + 1, cPh + 1).setValue(newPh); changed.push('사진'); }
+      }
+      Object.keys(map).forEach(function (k) {
+        if (nd[k] == null) return;
+        var v = String(nd[k]).slice(0, 300), h = map[k], c = head.indexOf(h);
+        if (c < 0 || String(r[h] == null ? '' : r[h]) === v) return;
+        r[h] = v; changed.push(h);
+        sh.getRange(i + 1, c + 1).setValue(['dong', 'ho', 'julnun', 'clean'].indexOf(k) >= 0 ? txt(v) : v);
+      });
+      var stamp = Utilities.formatDate(new Date(), 'Asia/Seoul', 'MM-dd HH:mm');
+      var cell = scheduleCell(r['일정표 칸'], id, oldDay), where = String(r['일정표 칸'] || '');
+      if (moved) {
+        var d = rowToRec(r, day), cWhere = head.indexOf('일정표 칸') + 1;
+        var blk = blockAt(day), placed = { where: '' };
+        if (blk) {
+          placed = placeInSchedule(d, id, (function () { var o = {}; o[day] = blk; return o; })());
+          if (placed.reason === 'full') return { ok: false, error: 'full' };
+        } else if ((scheduleSummary(true).counts[day] || 0) >= PER_DAY) return { ok: false, error: 'full' };
+        if (cell) cell.clearContent().setBackground(null).clearNote();
+        sh.getRange(i + 1, head.indexOf('시공일') + 1).setValue(txt(day));
+        sh.getRange(i + 1, head.indexOf('상태') + 1).setValue('접수'); // 날짜가 바뀌면 시간을 다시 정해야 해서 확정 전으로
+        if (cWhere) sh.getRange(i + 1, cWhere).setValue(placed.where || '');
+        r['상태'] = '접수'; r['시공일'] = day; r['일정표 칸'] = placed.where || ''; where = placed.where || '';
+        changed.unshift('시공일 ' + oldDay.slice(5) + '→' + day.slice(5));
+        cell = placed.where ? scheduleCell(placed.where, id) : null;
+      } else if (cell && changed.length) {
+        var t = bookingText(rowToRec(r), id);
+        if (r['상태'] === '확정') t = t.replace(WAIT_MARK, OK_MARK).replace(AS_WAIT, AS_OK);
+        cell.setValue(t);
+      }
+      if (cell) cell.setNote((isAS ? '홈페이지 A/S ' : '홈페이지 예약 ') + id + '\n고객이 앱에서 수정 ' + stamp);
+      var cEd = head.indexOf('고객 수정');
+      if (cEd >= 0 && changed.length) sh.getRange(i + 1, cEd + 1).setValue((r['고객 수정'] ? r['고객 수정'] + '\n' : '') + stamp + ' ' + changed.join(', '));
+      clearSummary();
+      return { ok: true, booking: publicBooking(r), moved: moved };
+    }
+    return { ok: false, error: 'notfound' };
+  } finally { lock.releaseLock(); }
+}
+function myCancel(id, name, phone) {
+  var r = null;
+  rows('book').some(function (x) { if (String(x['예약번호']) === String(id)) { r = x; return true; } return false; });
+  if (!r) return { ok: false, error: 'notfound' };
+  if (!sameOwner(r, name, phone)) return { ok: false, error: 'auth' };
+  if (daysFromToday(r['시공일'] ? dateStr(r['시공일']) : '') < CHANGE_DAYS) return { ok: false, error: 'locked' };
+  var res = setBooking(id, '취소');
+  if (res.ok) {
+    var sh = sheet('book'), data = sh.getDataRange().getValues(), cEd = data[0].indexOf('고객 수정');
+    for (var i = 1; i < data.length; i++) if (String(data[i][0]) === String(id) && cEd >= 0) sh.getRange(i + 1, cEd + 1).setValue((data[i][cEd] ? data[i][cEd] + '\n' : '') + Utilities.formatDate(new Date(), 'Asia/Seoul', 'MM-dd HH:mm') + ' 고객이 취소');
+  }
+  return res;
+}
+
+// ---------- 도우미 ----------
+function out(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
+function now() { return Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd HH:mm'); }
+function txt(v) { return v == null || v === '' ? '' : "'" + String(v); } // 0으로 시작하는 번호·날짜가 숫자로 바뀌지 않게
+function checkPw(pw) {
+  var real = PropertiesService.getScriptProperties().getProperty('ADMIN_PASSWORD');
+  return !!real && String(pw || '') === real;
+}
+function dateStr(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, 'Asia/Seoul', 'yyyy-MM-dd');
+  return String(v || '').replace(/^'/, '');
+}
+function sheet(key) {
+  var ss = SpreadsheetApp.getActive(), sh = ss.getSheetByName(TAB[key]);
+  if (!sh) { sh = ss.insertSheet(TAB[key]); sh.appendRow(SHEETS[key]); sh.setFrozenRows(1); return sh; }
+  var head = sh.getRange(1, 1, 1, SHEETS[key].length).getValues()[0];
+  SHEETS[key].forEach(function (h, j) { if (head[j] === '' || head[j] == null) sh.getRange(1, j + 1).setValue(h); }); // 새로 생긴 열 제목 채우기
+  return sh;
+}
+function rows(key) {
+  var data = sheet(key).getDataRange().getValues(), head = data[0], list = [];
+  for (var i = 1; i < data.length; i++) {
+    var o = {};
+    head.forEach(function (h, j) { o[h] = data[i][j]; });
+    list.push(o);
+  }
+  return list;
+}
+function folder(name) {
+  var it = DriveApp.getFoldersByName(name);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(name);
+}
+
+// 처음 한 번 실행하면 시트 탭을 미리 만들고 권한을 받아 둡니다
+function setup() {
+  Object.keys(SHEETS).forEach(function (k) { sheet(k); });
+  folder(CONTRACT_FOLDER); folder(PHOTO_FOLDER); folder(AS_FOLDER);
+  // 일정표 변경을 감지하는 자동 실행 (한 번만 만들어요)
+  var has = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'onSheetChange'; });
+  if (!has) ScriptApp.newTrigger('onSheetChange').forSpreadsheet(scheduleBook()).onChange().create();
+}

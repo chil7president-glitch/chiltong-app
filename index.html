@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>칠통령 — 베란다·다용도실 탄성코트</title>
+<meta name="description" content="새 집 베란다, 칠통령이 책임져요. 탄성코트 색 미리보기, 견적, 상담 예약, 시공 사례, 전자 계약까지 칠통령에서.">
+<meta name="theme-color" content="#1B2A5C">
+<meta property="og:type" content="website">
+<meta property="og:title" content="칠통령 — 베란다·다용도실 탄성코트">
+<meta property="og:description" content="새 집 베란다, 칠통령이 책임져요.">
+<meta property="og:image" content="assets/icon-512.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="칠통령">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preload" href="assets/PretendardVariable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" aria-live="polite"></div>
+<noscript><p style="padding:24px">칠통령 웹앱은 자바스크립트가 켜져 있어야 동작해요.</p></noscript>
+<script src="config.js"></script>
+<script src="data.js"></script>
+<script src="pdf.js"></script>
+<script src="coat.js"></script>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+}
+</script>
+</body>
+</html>

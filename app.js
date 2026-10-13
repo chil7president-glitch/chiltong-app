@@ -83,7 +83,7 @@
       view: { y: now.getFullYear(), m: now.getMonth() }, day: null,
       sheet: null, phone: '', memo: '', agree: false, formErr: '', sending: false
     },
-    cases: { list: null, loading: false, error: '', filter: null, pos: {} },
+    cases: { list: null, loading: false, error: '', filter: null, pos: {}, tab: 'sites', area: 'all', q: '', open: {} },
     contract: null,
     book: null,
     as: null,
@@ -222,7 +222,7 @@
       myBookingCard() +
       '<section style="display:flex;flex-direction:column;gap:10px"><div class="section-head"><h2>시공 사례</h2><a href="#/cases" style="font-size:13px;font-weight:600">단지별로 보기</a></div>' +
       '<div class="thumbs">' + cases.map(function (c) {
-        return '<a href="#/cases"><img src="' + esc(c.after) + '" alt="' + esc(c.apt) + ' 시공 사진" loading="lazy">' + esc(c.apt.replace('[예시] ', '')) + (c.color ? ' · ' + esc(c.color) : '') + '</a>';
+        return '<a href="#/cases" data-act="toPhotos"><img src="' + esc(c.after) + '" alt="' + esc(c.apt) + ' 시공 사진" loading="lazy">' + esc(c.apt.replace('[예시] ', '')) + (c.color ? ' · ' + esc(c.color) : '') + '</a>';
       }).join('') + '</div></section>' +
       installCard + bizFooter() +
       '</main>' + tabbar('home') + (S.homeDraft ? sheetHome() : '') + '</div>';
@@ -456,7 +456,7 @@
       '<section class="card" style="gap:10px"><h2>2. 시공 날짜</h2>' + bookCalendar() +
       '<div class="row" style="gap:14px;font-size:12px;color:var(--muted)"><span class="row" style="gap:6px"><i class="lg lg-open"></i>예약 가능</span><span class="row" style="gap:6px"><i class="lg lg-full"></i>마감</span><span class="row" style="gap:6px"><i class="lg lg-off"></i>선택 불가</span></div>' +
       (b.schedErr ? '<p class="note-err">' + esc(b.schedErr) + '</p>' : '') +
-      '<p class="hint">시공 희망일 최소 3주 전에 예약해 주세요. 3주 안쪽 날짜는 ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 문의해 주세요. 토·일요일도 시공해요.</p></section>' +
+      '<p class="hint">시공 희망일 최소 3주 전에 예약해 주세요. 3주 안쪽 날짜는 ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 문의해 주세요.<br>토·일요일도 시공해요.</p></section>' +
       '<section class="card"><h2>3. 예약하시는 분</h2>' +
       '<label class="field" for="b-name">이름<input class="input" id="b-name" type="text" autocomplete="name" placeholder="홍길동" value="' + esc(b.name) + '" data-bind="book.name"></label>' +
       '<label class="field" for="b-phone">연락처<input class="input" id="b-phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="010-0000-0000" value="' + esc(b.phone) + '" data-bind="book.phone" data-fmt="phone"></label>' +
@@ -577,6 +577,35 @@
       (c.color ? '<span class="tag gold"><span class="dot" style="background:' + (col ? col[2] : '#D4D7D7') + '"></span>탄성코트 ' + esc(c.color) + '</span>' : '') +
       '</div>' + (c.memo ? '<p>' + esc(c.memo) + '</p>' : '') + '</div></article>';
   }
+  // ---------- 전국 시공 현장 리스트 (sites.js) ----------
+  function viewSites() {
+    var cs = S.cases, AREAS = window.CHIL_SITES || [];
+    var all = 0, hh = 0, groups = 0;
+    AREAS.forEach(function (a) { a[1].forEach(function (g) { groups++; g[1].forEach(function (x) { all++; hh += x[1]; }); }); });
+    var q = cs.q.replace(/\s+/g, '').toLowerCase();
+    var match = function (n) { return !q || n.replace(/\s+/g, '').toLowerCase().indexOf(q) >= 0; };
+    var shownCount = 0, first = true;
+    var body = AREAS.filter(function (a) { return cs.area === 'all' || cs.area === a[0]; }).map(function (a) {
+      return a[1].map(function (g) {
+        var items = g[1].filter(function (x) { return match(x[0]); });
+        if (!items.length) return '';
+        shownCount += items.length;
+        var sum = items.reduce(function (t, x) { return t + x[1]; }, 0);
+        var key = a[0] + '/' + g[0];
+        var open = q ? true : (cs.open[key] != null ? cs.open[key] : (first && cs.area === 'all' ? true : cs.area !== 'all'));
+        first = false;
+        return '<details class="site-g"' + (open ? ' open' : '') + ' data-key="' + esc(key) + '"><summary><b>' + esc(g[0]) + '</b><span>' + items.length + '곳 · ' + sum.toLocaleString('ko-KR') + '세대</span></summary><ul>' +
+          items.map(function (x) { return '<li><span class="n">' + esc(x[0]) + '</span><span class="u">' + x[1].toLocaleString('ko-KR') + '세대</span></li>'; }).join('') + '</ul></details>';
+      }).join('');
+    }).join('');
+    return '<section class="site-hero"><span class="k">전국 시공 실적으로 증명하는 기술력</span><h2>전국 시공 현장</h2>' +
+      '<div class="nums"><div><b>' + all.toLocaleString('ko-KR') + '</b><span>시공 단지</span></div><div><b>' + hh.toLocaleString('ko-KR') + '</b><span>세대</span></div><div><b>' + groups + '</b><span>시·도 지역</span></div></div></section>' +
+      '<label class="field" for="site-q" style="gap:0"><span class="sr-only">아파트 이름으로 찾기</span><input class="input" id="site-q" type="search" placeholder="아파트 이름으로 찾기 (예: 운정, 힐스테이트)" value="' + esc(cs.q) + '" data-bind="cases.q" data-fmt="live"></label>' +
+      '<div class="chip-row" role="group" aria-label="권역">' + chip('전체', cs.area === 'all', 'siteArea', ' data-v="all"') + AREAS.map(function (a) { return chip(a[0], cs.area === a[0], 'siteArea', ' data-v="' + esc(a[0]) + '"'); }).join('') + '</div>' +
+      (q ? '<p class="hint" style="font-size:13px;margin:0">"' + esc(cs.q) + '" 검색 결과 ' + shownCount + '곳</p>' : '') +
+      (body || '<div class="empty"><b>목록에서 찾지 못했어요</b><span>목록에 없는 단지도 시공할 수 있어요.</span><a class="btn btn-primary" href="#/quote" style="margin-top:8px">상담 예약하기</a></div>') +
+      '<p class="hint" style="font-size:12px">칠통령 회사 소개서 기준 시공 현장이에요.</p>';
+  }
   function viewCases() {
     var cs = S.cases;
     var list = cs.list && cs.list.length ? cs.list : (cs.list ? HJ.SAMPLE_CASES : []);
@@ -589,7 +618,9 @@
     if (cs.loading && !cs.list) body = '<div class="skeleton"></div><div class="skeleton"></div>';
     else if (!shown.length) body = '<div class="empty"><b>아직 이 단지 사례가 없어요</b><span>곧 시공 사진을 올려드릴게요</span></div>';
     else body = shown.map(caseCard).join('');
-    return '<div class="screen with-tabbar">' + topbar('시공 사례') + '<main class="content">' +
+    var seg = '<div class="seg" role="group" aria-label="시공 사례 보기">' + [['sites', '전국 시공 현장'], ['photos', '시공 사진']].map(function (t) { return '<button type="button" aria-pressed="' + (cs.tab === t[0]) + '" data-act="caseTab" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+    if (cs.tab === 'sites') return '<div class="screen with-tabbar">' + topbar('시공 사례') + '<main class="content">' + seg + viewSites() + '</main>' + tabbar('') + '</div>';
+    return '<div class="screen with-tabbar">' + topbar('시공 사례') + '<main class="content">' + seg +
       '<div class="chip-row" role="group" aria-label="아파트 단지">' + chip('전체', filter === 'all', 'caseFilter', ' data-v="all"') + apts.map(function (a) { return chip(a, filter === a, 'caseFilter', ' data-v="' + esc(a) + '"'); }).join('') + '</div>' +
       '<p class="hint" style="font-size:13px">' + esc(filter === 'all' ? '전체 단지' : filter) + ' · 사례 ' + shown.length + '건</p>' +
       (cs.error ? '<p class="note-err">' + esc(cs.error) + '</p>' : '') + body +
@@ -1057,6 +1088,9 @@
       });
     },
 
+    toPhotos: function () { S.cases.tab = 'photos'; },
+    caseTab: function (el) { S.cases.tab = el.dataset.v; render(); },
+    siteArea: function (el) { S.cases.area = el.dataset.v; S.cases.open = {}; render(); },
     caseFilter: function (el) { S.cases.filter = el.dataset.v; render(); },
 
     kProduct: function (el) { S.contract.product = el.dataset.v; S.contract.err = ''; render(); },
@@ -1176,6 +1210,7 @@
       if (S.route === 'book') S.book.err = '';
       if (S.route === 'as') S.as.err = '';
       // 금액·형식이 바뀌는 칸만 다시 그림 (나머지는 그대로 두어 입력이 끊기지 않게)
+      if (fmt === 'live') { render(); return; }
       if (fmt === 'phone' || fmt === 'money') {
         render();
         var el2 = el.id && document.getElementById(el.id);
@@ -1222,6 +1257,11 @@
         .catch(function () { S.admin.form.err = '사진을 열 수 없어요.'; render(); });
     }
   });
+
+  app.addEventListener('toggle', function (e) {
+    var d = e.target; if (!d || d.tagName !== 'DETAILS' || !d.dataset.key) return;
+    S.cases.open[d.dataset.key] = d.open;
+  }, true);
 
   window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); S.install = e; if (S.route === 'home') render(); });
 

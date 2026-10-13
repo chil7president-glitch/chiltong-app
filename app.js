@@ -866,14 +866,13 @@
     ]).then(function () { a.busy = false; render(); });
   }
   var BK_ST = { '접수': 'st-wait', '확정': 'st-ok', '취소': 'st-no' };
-  function adminBookings() {
-    var a = S.admin, t0 = dayKey(new Date());
-    var list = (a.books || []).slice().sort(function (x, y) { return x.day < y.day ? -1 : x.day > y.day ? 1 : 0; });
+  function adminBookings(mode) {
+    var a = S.admin, t0 = dayKey(new Date()), isAS = mode === 'as';
+    var list = (a.books || []).filter(function (b) { return isAS ? b.kind === 'AS' : b.kind !== 'AS'; }).sort(function (x, y) { return x.day < y.day ? -1 : x.day > y.day ? 1 : 0; });
     var asWait = list.filter(function (b) { return b.kind === 'AS' && !b.day && b.status !== '취소'; });
     var upcoming = list.filter(function (b) { return b.day && b.day >= t0 && b.status !== '취소'; });
     var rest = list.filter(function (b) { return b.day ? !(b.day >= t0 && b.status !== '취소') : b.status === '취소'; }).reverse();
     var waiting = upcoming.filter(function (b) { return b.status === '접수'; }).length;
-    var asCnt = upcoming.filter(function (b) { return b.kind === 'AS'; }).length;
     var techOf = function (n) { return (a.techs || []).find(function (t) { return t.name === n; }); };
     var item = function (b) {
       var addr = b.apt + (b.dong ? ' ' + b.dong + '동' : '') + (b.ho ? ' ' + b.ho + '호' : '');
@@ -882,7 +881,7 @@
         '<div class="meta"><b style="color:var(--ink)">' + esc(b.name) + '</b> · ' + esc(b.phone) + '<br>' + esc(addr) + ' · ' + esc((b.services || []).join(', ')) +
         (b.symptom ? '<br><b style="color:var(--err)">증상: ' + esc(b.symptom) + '</b>' : '') + (b.when ? '<br>시공 시기: ' + esc(b.when) : '') +
         (b.quote ? '<br>견적: ' + esc(b.quote) : '') + (b.memo ? '<br>' + (b.kind === 'AS' ? '내용' : '남긴 말') + ': ' + esc(b.memo) : '') +
-        ((b.photos || []).length ? '<br>사진: ' + b.photos.map(function (u, i) { return '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + (i + 1) + '번</a>'; }).join(' · ') : '') +
+        ((b.photos || []).length ? '<span class="bk-photos">' + b.photos.map(function (u, i) { return '<a href="' + esc(u) + '" target="_blank" rel="noopener" aria-label="사진 ' + (i + 1) + '번 크게 보기"><img src="' + esc(u) + '=w400" alt="A/S 사진 ' + (i + 1) + '" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=\'' + esc(u) + '\'"></a>'; }).join('') + '</span>' : '') +
         '<br><span style="color:' + (b.cell ? 'var(--green)' : 'var(--err)') + '">' + (b.cell ? '일정표 ' + esc(b.cell) + ' 칸에 적었어요' : (b.status === '취소' ? '일정표에서 지웠어요' : !b.day ? '방문 날짜를 정하면 일정표에 적혀요' : '일정표에 이 날짜 칸이 없어 예약 탭에만 있어요')) + '</span></div>' +
         (b.kind === 'AS' && b.status !== '취소' ? '<div class="as-day"><input class="input" type="date" id="asd-' + esc(b.id) + '" aria-label="방문 날짜" value="' + esc(b.day || '') + '"><button type="button" class="chip" aria-pressed="true" data-act="asSetDay" data-v="' + esc(b.id) + '">' + (b.day ? '날짜 바꾸기' : '이 날로 일정 잡기') + '</button></div>' : '') +
         (b.status !== '취소' && (a.techs || []).length ? '<div class="techs"><span>기사님</span>' + a.techs.map(function (t) {
@@ -891,18 +890,21 @@
         '<div class="acts">' + (b.status !== '확정' ? '<button type="button" class="chip" aria-pressed="true" data-act="bkSet" data-v="' + esc(b.id) + '" data-s="확정">확정</button>' : '') +
         (b.status !== '취소' ? '<button type="button" class="chip" aria-pressed="false" data-act="bkSet" data-v="' + esc(b.id) + '" data-s="취소">취소</button>' : '<button type="button" class="chip" aria-pressed="false" data-act="bkSet" data-v="' + esc(b.id) + '" data-s="접수">되돌리기</button>') + '</div></div>';
     };
-    var html = '<div class="callout">홈페이지 예약은 시공 일정표의 그 날짜 칸에 바로 적혀요. 기사님을 정하면 칸이 <b>그 기사님 색</b>으로, 정하기 전엔 <b>하늘색</b>이에요. 일정표에서 칸 색을 직접 바꿔도 기사님이 따라 바뀌어요. 전화로 시간을 정한 뒤 <b>확정</b>을 누르고, <b>취소</b>하면 칸이 비워져요. 일정표 칸이 하루 ' + BOOK.perDay + '개 차거나 마감한 날은 고객 달력에 마감으로 보여요.</div>' +
+    var reload = '<button type="button" class="chip" aria-pressed="false" style="min-height:32px;font-size:12px" data-act="bkReload"' + (a.busy ? ' disabled' : '') + '>' + (a.busy ? '불러오는 중…' : '새로고침') + '</button>';
+    var html = isAS ? '<div class="callout">고객이 올린 A/S 신청이에요. 증상과 사진을 확인하고 전화로 방문 날짜를 정한 뒤 <b>이 날로 일정 잡기</b>를 누르면 일정표 그날 칸에 <b>A/S</b>로 적혀요.</div>' +
+      '<div class="section-head"><h2>일정 미정 ' + asWait.length + '건</h2>' + reload + '</div>' +
+      (!a.books ? '' : asWait.length ? asWait.map(item).join('') : '<div class="empty"><b>날짜를 정할 A/S가 없어요</b><span>고객이 A/S를 신청하면 여기에 보여요.</span></div>') +
+      '<div class="section-head"><h2>방문 예정 A/S ' + upcoming.length + '건</h2>' + (waiting ? '<span class="st st-wait">확정 대기 ' + waiting + '</span>' : '') + '</div>' :
+      '<div class="callout">홈페이지 예약은 시공 일정표의 그 날짜 칸에 바로 적혀요. 기사님을 정하면 칸이 <b>그 기사님 색</b>으로, 정하기 전엔 <b>하늘색</b>이에요. 일정표에서 칸 색을 직접 바꿔도 기사님이 따라 바뀌어요. 전화로 시간을 정한 뒤 <b>확정</b>을 누르고, <b>취소</b>하면 칸이 비워져요. 일정표 칸이 하루 ' + BOOK.perDay + '개 차거나 마감한 날은 고객 달력에 마감으로 보여요.</div>' +
       ((a.techs || []).length ? '<section class="card" style="gap:8px"><h2 style="font-size:15px">기사님 색</h2><div class="wrap">' + a.techs.map(function (t) {
         return '<span class="chip tech" aria-pressed="false" style="cursor:default"><i style="background:' + t.color + '"></i>' + esc(t.name) + (t.regions && t.regions.length ? ' · ' + esc(t.regions.join(', ')) : '') + '</span>';
       }).join('') + '</div><span class="hint">예약마다 기사님을 누르면 일정표 칸이 그 색으로 바뀌어요. 맡을 지역을 정해 두면 새 예약이 자동으로 그 기사님 색으로 들어가요.</span></section>' : '') +
       '<section class="card" style="gap:10px"><h2 style="font-size:15px">예약 안 받는 날</h2>' +
       '<div class="row" style="gap:8px"><input class="input" id="a-close" type="date" style="flex:1;min-width:0" value="' + esc(a.closeDay) + '" data-bind="admin.closeDay"><button type="button" class="btn btn-primary" style="min-height:48px;padding:0 16px" data-act="bkClose">마감하기</button></div>' +
       (a.closed.length ? '<div class="wrap">' + a.closed.slice().sort().filter(function (d) { return d >= t0; }).map(function (d) { return '<button type="button" class="chip" aria-pressed="false" data-act="bkOpen" data-v="' + d + '">' + esc(dayLabel(d)) + ' ✕</button>'; }).join('') + '</div>' : '<span class="hint">휴무일이나 일정이 꽉 찬 날을 골라 마감하세요.</span>') + '</section>' +
-      '<div class="section-head"><h2>다가오는 예약 ' + upcoming.length + '건' + (asCnt ? ' <span class="rg as" style="vertical-align:3px">A/S ' + asCnt + '</span>' : '') + '</h2><span class="row" style="gap:6px">' + (waiting ? '<span class="st st-wait">확정 대기 ' + waiting + '</span>' : '') + '<button type="button" class="chip" aria-pressed="false" style="min-height:32px;font-size:12px" data-act="bkReload"' + (a.busy ? ' disabled' : '') + '>' + (a.busy ? '불러오는 중…' : '일정표에서 새로고침') + '</button></span></div>';
-    if (asWait.length) html = html.replace('<section class="card" style="gap:10px"><h2 style="font-size:15px">예약 안 받는 날</h2>',
-      '<div class="section-head"><h2>A/S 접수 · 일정 미정 ' + asWait.length + '건</h2></div>' + asWait.map(item).join('') + '<section class="card" style="gap:10px"><h2 style="font-size:15px">예약 안 받는 날</h2>');
+      '<div class="section-head"><h2>다가오는 시공 ' + upcoming.length + '건</h2><span class="row" style="gap:6px">' + (waiting ? '<span class="st st-wait">확정 대기 ' + waiting + '</span>' : '') + reload + '</span></div>';
     if (!a.books) html += '<div class="skeleton" style="height:120px"></div>';
-    else if (!upcoming.length) html += '<div class="empty"><b>다가오는 예약이 없어요</b><span>고객이 시공일 예약을 신청하면 여기에 보여요.</span></div>';
+    else if (!upcoming.length) html += isAS ? '<div class="empty"><b>방문 예정 A/S가 없어요</b><span>날짜를 정한 A/S가 여기에 보여요.</span></div>' : '<div class="empty"><b>다가오는 시공이 없어요</b><span>고객이 시공일 예약을 신청하면 여기에 보여요.</span></div>';
     else {
       var days = [];
       upcoming.forEach(function (b) { if (days.indexOf(b.day) < 0) days.push(b.day); });
@@ -912,11 +914,11 @@
         its.forEach(function (b) { var r = b.region || '기타'; if (!cnt[r]) { cnt[r] = 0; regs.push(r); } cnt[r]++; });
         its.sort(function (x, y) { return regs.indexOf(x.region || '기타') - regs.indexOf(y.region || '기타'); });
         html += '<div class="day-head"><div><b>' + esc(dayLabel(d)) + ' · ' + its.length + '건</b><span>' + regs.map(function (r) { return esc(r) + ' ' + cnt[r]; }).join(' · ') + '</span></div>' +
-          '<button type="button" class="chip" aria-pressed="false" data-act="bkRegroup" data-v="' + d + '">일정표 지역별로 모으기</button></div>' + its.map(item).join('');
+          (isAS ? '' : '<button type="button" class="chip" aria-pressed="false" data-act="bkRegroup" data-v="' + d + '">일정표 지역별로 모으기</button>') + '</div>' + its.map(item).join('');
       });
     }
     if (rest.length) {
-      html += '<button type="button" class="btn btn-ghost" data-act="bkPast">' + (a.showPast ? '지난·취소 예약 숨기기' : '지난·취소 예약 ' + rest.length + '건 보기') + '</button>';
+      html += '<button type="button" class="btn btn-ghost" data-act="bkPast">' + (a.showPast ? '지난·취소 ' + (isAS ? 'A/S' : '예약') + ' 숨기기' : '지난·취소 ' + (isAS ? 'A/S' : '예약') + ' ' + rest.length + '건 보기') + '</button>';
       if (a.showPast) html += rest.map(item).join('');
     }
     return html;
@@ -934,9 +936,11 @@
     }
     var list = a.list;
     var html = '<div class="screen">' + topbar('관리자', a.tab === 'cases' ? '<button type="button" class="chip" aria-pressed="true" data-act="adminNew" style="margin-right:8px">' + I.plus + ' 사례 등록</button>' : '') + '<main class="content">' +
-      '<div class="seg" role="group" aria-label="관리 메뉴">' + [['book', '시공 예약'], ['cases', '시공 사례']].map(function (t) { return '<button type="button" aria-pressed="' + (a.tab === t[0]) + '" data-act="adminTab" data-v="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>' +
+      '<div class="seg" role="group" aria-label="관리 메뉴">' + [['book', '시공 예약'], ['as', 'A/S'], ['cases', '시공 사례']].map(function (t) {
+        var n = t[0] === 'as' ? (a.books || []).filter(function (b) { return b.kind === 'AS' && !b.day && b.status !== '취소'; }).length : 0;
+        return '<button type="button" aria-pressed="' + (a.tab === t[0]) + '" data-act="adminTab" data-v="' + t[0] + '">' + t[1] + (n ? ' <span class="seg-n">' + n + '</span>' : '') + '</button>'; }).join('') + '</div>' +
       (a.err ? '<p class="note-err" role="alert">' + esc(a.err) + '</p>' : '');
-    if (a.tab === 'book') return html + adminBookings() + '<button type="button" class="btn btn-ghost" data-act="adminLogout">로그아웃</button></main></div>';
+    if (a.tab === 'book' || a.tab === 'as') return html + adminBookings(a.tab) + '<button type="button" class="btn btn-ghost" data-act="adminLogout">로그아웃</button></main></div>';
     html += '<div class="callout">상담 신청과 계약서는 연결한 구글 시트의 <b>상담신청</b> · <b>계약</b> 탭에 쌓여요. 계약서 PDF는 구글 드라이브 "칠통령 계약서" 폴더에 저장돼요.</div>';
     if (!list) html += '<div class="skeleton" style="height:90px"></div>';
     else if (!list.length) html += '<div class="empty"><b>등록된 사례가 없어요</b><span>오른쪽 위 "사례 등록"으로 첫 사진을 올려주세요. 그 전까지 고객 화면에는 예시 사례가 보여요.</span></div>';

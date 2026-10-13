@@ -76,7 +76,7 @@
     route: '',
     home: load('chil-home', { apt: '', dong: '', ho: '', date: '' }),
     homeDraft: null,
-    color: { room: 'livingV', coat: HJ.color(load('chil-coat', 'white')) ? load('chil-coat', 'white') : 'white', mode: 'sample', url: '', busy: false, err: '' },
+    color: { room: 'livingV', coat: HJ.color(load('chil-coat', 'lgray')) ? load('chil-coat', 'lgray') : 'lgray', mode: 'sample', url: '', busy: false, err: '' },
     quote: {
       svc: { grout: true, clean: false }, build: 'new', size: 34, material: 'cosel',
       spots: { laundry: true, outdoorShelter: true, masterBalcony: true, shelterSep: false },
@@ -107,6 +107,7 @@
     if (S.route === 'contract' && !S.contract) S.contract = newContract();
     if (S.route === 'book') { if (!S.book) S.book = newBooking(); if (!S.book.sched) loadSchedule(); }
     if (S.route === 'as') { if (!S.as) S.as = newAS(); }
+    if (S.route === 'mybook') { if (!S.my) S.my = newMy(); if (S.my.list === null && S.my.name && S.my.phone && API.ready) myFind(); }
     if (S.route === 'admin' && S.admin.authed && !S.admin.list) adminLoad();
   }
 
@@ -115,7 +116,7 @@
   function render(scrollTop) {
     var active = document.activeElement, fid = active && active.id, sel = null;
     if (fid && active.setSelectionRange && typeof active.selectionStart === 'number') sel = [active.selectionStart, active.selectionEnd];
-    var view = ({ intro: viewIntro, home: viewHome, color: viewColor, quote: viewQuote, book: viewBook, as: viewAS, guide: viewGuide, cases: viewCases, contract: viewContract, admin: viewAdmin })[S.route] || viewHome;
+    var view = ({ intro: viewIntro, home: viewHome, color: viewColor, quote: viewQuote, book: viewBook, mybook: viewMy, as: viewAS, guide: viewGuide, cases: viewCases, contract: viewContract, admin: viewAdmin })[S.route] || viewHome;
     app.innerHTML = view();
     if (scrollTop) window.scrollTo(0, 0);
     if (fid) {
@@ -128,7 +129,7 @@
   function afterRender() {
     if (S.route === 'intro') setupIntro();
     if (S.route === 'contract') setupSig();
-    document.title = ({ intro: '칠통령', home: '칠통령 — 베란다·다용도실 탄성코트', color: '탄성코트 색 고르기 · 칠통령', quote: '견적·상담 예약 · 칠통령', book: '시공일 예약 · 칠통령', as: 'A/S 신청 · 칠통령', guide: '입주 준비 코스 · 칠통령', cases: '시공 사례 · 칠통령', contract: '시공 계약서 · 칠통령', admin: '관리자 · 칠통령' })[S.route] || '칠통령';
+    document.title = ({ intro: '칠통령', home: '칠통령 — 베란다·다용도실 탄성코트', color: '탄성코트 색 고르기 · 칠통령', quote: '견적·상담 예약 · 칠통령', book: '시공일 예약 · 칠통령', mybook: '내 예약 · 칠통령', as: 'A/S 신청 · 칠통령', guide: '입주 준비 코스 · 칠통령', cases: '시공 사례 · 칠통령', contract: '시공 계약서 · 칠통령', admin: '관리자 · 칠통령' })[S.route] || '칠통령';
   }
 
   // ---------- shared pieces ----------
@@ -386,7 +387,7 @@
   // ======================================================
   // 시공일 예약 (날짜만 고르고, 시간은 칠통령이 연락해서 정함)
   // ======================================================
-  var BOOK = Object.assign({ leadDays: 21, perDay: 1, monthsAhead: 6 }, CFG.BOOKING || {});
+  var BOOK = Object.assign({ leadDays: 7, changeLeadDays: 7, perDay: 1, monthsAhead: 6 }, CFG.BOOKING || {});
   function dayKey(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function dayLabel(key) {
     if (!key) return '';
@@ -402,17 +403,30 @@
     var h = S.home, rg = bookRange(), draft = load('chil-quote', null);
     return {
       view: { y: rg.first.getFullYear(), m: rg.first.getMonth() }, day: null,
-      svc: { coat: true },
+      product: draft && draft.material && HJ.PRODUCTS.some(function (p) { return p[1] === draft.material; }) ? draft.material : '',
+      color: draft && draft.color && HJ.color(draft.color) ? HJ.color(draft.color)[1] : (S.color && S.color.coat && HJ.color(S.color.coat) ? HJ.color(S.color.coat)[1] : ''),
+      access: '', julnun: '', clean: '',
       name: '', phone: draft && draft.phone ? draft.phone : '', region: '', apt: h.apt || '', dong: h.dong || '', ho: h.ho || '', memo: '',
       quote: draft && draft.services && draft.services.length ? draft : null,
       agree: false, err: '', sending: false, sched: null, schedErr: '', loading: false, done: null
     };
   }
-  function loadSchedule(b, routeName) {
+  // 마감 정보는 앱을 열 때 미리 받아 둬요 → 예약 화면에 들어가면 바로 보여요
+  var schedP = null, schedAt = 0;
+  function fetchSchedule(fresh) {
+    if (!API.ready) return Promise.reject(new Error('noapi'));
+    if (fresh || !schedP || Date.now() - schedAt > 120000) {
+      schedAt = Date.now();
+      schedP = API.get('schedule');
+      schedP.catch(function () { schedP = null; });
+    }
+    return schedP;
+  }
+  function loadSchedule(b, routeName, fresh) {
     b = b || S.book; routeName = routeName || 'book';
     if (!API.ready || b.loading) return;
     b.loading = true;
-    API.get('schedule').then(function (j) { b.sched = { counts: j.counts || {}, closed: j.closed || [] }; b.schedErr = ''; })
+    fetchSchedule(fresh).then(function (j) { b.sched = { counts: j.counts || {}, closed: j.closed || [] }; b.schedErr = ''; })
       .catch(function () { b.schedErr = '마감된 날짜를 불러오지 못했어요. 신청 후 날짜가 안 되면 다시 연락드릴게요.'; })
       .then(function () { b.loading = false; if (S.route === routeName) render(); });
   }
@@ -445,27 +459,44 @@
       return '<a href="#/' + t[0] + '"' + (active === t[0] ? ' aria-current="page"' : '') + '>' + t[1] + '</a>';
     }).join('') + '</nav>';
   }
+  // 예약할 때 · 예약을 바꿀 때 같이 쓰는 칸들
+  var ACCESS = ['임시키', '잔금 치르고 현관 비밀번호'];
+  function pickChips(list, cur, key) {
+    return '<div class="wrap">' + list.map(function (v) { return chip(v, cur === v, 'pick', ' data-k="' + key + '" data-v="' + esc(v) + '"'); }).join('') + '</div>';
+  }
+  function productColorFields(b, key) {
+    return '<div class="field"><span>시공 제품</span>' + pickChips(HJ.PRODUCTS.map(function (p) { return p[1]; }), b.product, key + '.product') + '</div>' +
+      '<div class="field"><span>시공 색상 <a href="#/color" style="font-size:12px;font-weight:600;margin-left:6px">색 미리보기 →</a></span>' + pickChips(HJ.COLORS.map(function (c) { return c[1]; }), b.color, key + '.color') + '</div>';
+  }
+  function extraFields(b, key, idp) {
+    return '<div class="field"><span>출입 방법</span>' + pickChips(ACCESS, b.access, key + '.access') + '<span class="hint" style="font-weight:500">현관 비밀번호는 잔금 치른 뒤 칠통령에 따로 알려주세요</span></div>' +
+      '<div class="row" style="gap:10px;align-items:flex-start">' +
+      '<label class="field" for="' + idp + '-jul" style="flex:1;min-width:0">줄눈 시공 일정<input class="input" id="' + idp + '-jul" type="text" placeholder="예) 11월 20일" value="' + esc(b.julnun) + '" data-bind="' + key + '.julnun"></label>' +
+      '<label class="field" for="' + idp + '-cln" style="flex:1;min-width:0">입주청소 일정<input class="input" id="' + idp + '-cln" type="text" placeholder="예) 미정" value="' + esc(b.clean) + '" data-bind="' + key + '.clean"></label></div>' +
+      '<label class="field" for="' + idp + '-memo">남길 말 · 특이사항 (선택)<textarea class="textarea" id="' + idp + '-memo" rows="3" placeholder="탄성은 첫날 잡으시는 게 좋아요 :)&#10;부탁하실 내용이나 특이사항을 적어주세요 !" data-bind="' + key + '.memo">' + esc(b.memo) + '</textarea></label>';
+  }
   function viewBook() {
     var b = S.book;
     if (b.done) return viewBookDone();
     var phone = BIZ.phone && BIZ.phone.indexOf('[') < 0 ? BIZ.phone : '';
     return '<div class="screen with-footer">' + topbar('예약') + '<main class="content">' + bookSeg('book') +
       '<div class="callout">시공 <b>날짜만</b> 골라주세요. 시간은 칠통령에서 미리 연락드려 정해요.</div>' +
-      '<section class="card"><h2>1. 시공 내용 · 탄성코트</h2>' +
-      (b.quote ? '<div class="sel-info" style="padding:10px 12px;background:var(--line-2)"><div class="a"><small>견적 내용</small><b style="font-size:14px">' + esc((b.quote.spots || []).join(', ') || b.quote.services.join(', ')) + '</b></div><a href="#/quote" style="font-size:13px;font-weight:600;white-space:nowrap">고치기 →</a></div>' : '<a href="#/quote" style="font-size:13px;font-weight:600">견적 먼저 계산해 보기 →</a>') + '</section>' +
+      '<a class="card my-link" href="#/mybook"><span style="color:var(--green)">' + I.cal + '</span><span style="flex:1;min-width:0"><b>이미 예약하셨나요?</b><span class="hint">내 예약 확인 · 날짜 변경 · 취소</span></span>' + I.next + '</a>' +
+      '<section class="card"><h2>1. 시공 제품 · 색상</h2>' + productColorFields(b, 'book') +
+      (b.quote ? '<div class="sel-info" style="padding:10px 12px;background:var(--line-2)"><div class="a"><small>견적 내용</small><b style="font-size:14px">' + esc((b.quote.spots || []).join(', ') || b.quote.services.join(', ')) + '</b></div><a href="#/quote" style="font-size:13px;font-weight:600;white-space:nowrap">고치기 →</a></div>' : '') + '</section>' +
       '<section class="card" style="gap:10px"><h2>2. 시공 날짜</h2>' + bookCalendar() +
       '<div class="row" style="gap:14px;font-size:12px;color:var(--muted)"><span class="row" style="gap:6px"><i class="lg lg-open"></i>예약 가능</span><span class="row" style="gap:6px"><i class="lg lg-full"></i>마감</span><span class="row" style="gap:6px"><i class="lg lg-off"></i>선택 불가</span></div>' +
       (b.schedErr ? '<p class="note-err">' + esc(b.schedErr) + '</p>' : '') +
-      '<p class="hint">시공 희망일 최소 3주 전에 예약해 주세요. 3주 안쪽 날짜는 ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 문의해 주세요.<br>토·일요일도 시공해요.</p></section>' +
+      '<p class="hint">시공 희망일 최소 1주 전에 예약해 주세요. 1주 안쪽 날짜는 ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 문의해 주세요.<br>토·일요일도 시공해요.</p></section>' +
       '<section class="card"><h2>3. 예약하시는 분</h2>' +
       '<label class="field" for="b-name">이름<input class="input" id="b-name" type="text" autocomplete="name" placeholder="홍길동" value="' + esc(b.name) + '" data-bind="book.name"></label>' +
       '<label class="field" for="b-phone">연락처<input class="input" id="b-phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="010-0000-0000" value="' + esc(b.phone) + '" data-bind="book.phone" data-fmt="phone"></label>' +
-      '<label class="field" for="b-region">지역 (시·구)<input class="input" id="b-region" type="text" list="region-list" placeholder="예) 부천, 검단, 파주" value="' + esc(b.region) + '" data-bind="book.region"><span class="hint" style="font-weight:500">같은 지역 고객끼리 묶어서 기사님이 찾아가요</span></label>' +
+      '<label class="field" for="b-region">지역 (시·구)<input class="input" id="b-region" type="text" list="region-list" placeholder="예) 부천, 천안, 부산" value="' + esc(b.region) + '" data-bind="book.region"><span class="hint" style="font-weight:500">같은 지역 고객끼리 묶어서 기사님이 찾아가요</span></label>' +
       '<datalist id="region-list">' + (BOOK.regions || []).map(function (r) { return '<option value="' + esc(r) + '">'; }).join('') + '</datalist>' +
       '<label class="field" for="b-apt">아파트명<input class="input" id="b-apt" type="text" placeholder="예) 칠통령센트럴" value="' + esc(b.apt) + '" data-bind="book.apt"></label>' +
       '<div class="field"><span>동 / 호수</span><div class="row"><input class="input small" id="b-dong" type="text" inputmode="numeric" maxlength="4" aria-label="동" placeholder="101" value="' + esc(b.dong) + '" data-bind="book.dong" data-fmt="digits"><span style="margin-right:10px">동</span>' +
       '<input class="input small" id="b-ho" type="text" inputmode="numeric" maxlength="4" aria-label="호수" placeholder="1203" value="' + esc(b.ho) + '" data-bind="book.ho" data-fmt="digits"><span>호</span></div></div>' +
-      '<label class="field" for="b-memo">남길 말 (선택)<textarea class="textarea" id="b-memo" rows="3" placeholder="예) 입주일이 12월 20일이에요. 오전 통화가 편해요." data-bind="book.memo">' + esc(b.memo) + '</textarea></label>' +
+      '</section><section class="card"><h2>4. 출입 · 일정 · 남길 말</h2>' + extraFields(b, 'book', 'b') +
       '<label class="check"><input type="checkbox" data-check="book.agree"' + (b.agree ? ' checked' : '') + '>예약을 위한 개인정보(이름·연락처·주소) 수집·이용에 동의해요 <a href="privacy.html" target="_blank" style="font-size:12px;margin-left:auto">보기</a></label></section>' +
       (b.err ? '<p class="note-err" role="alert" style="font-size:13px">' + esc(b.err) + '</p>' : '') +
       '</main><div class="footer-bar"><div class="sum-line"><span class="l">시공 희망일</span><span class="r">' + esc(b.day ? dayLabel(b.day) : '날짜를 골라주세요') + '</span></div>' +
@@ -477,15 +508,90 @@
       '<div class="done-box"><div class="mark">' + I.ok + '</div><h2>예약 신청이 접수됐어요</h2><p><b style="color:var(--ink)">' + esc(dayLabel(d.day)) + '</b> 시공으로 신청하셨어요.<br>칠통령에서 ' + esc(d.phone) + ' 번호로 연락드려<br>시간을 정하고 예약을 확정해 드릴게요.</p></div>' +
       (d.sendErr ? '<div class="callout" role="alert" style="color:var(--err)">' + esc(d.sendErr) + '</div>' : '') +
       '<a class="btn btn-primary" href="#/home">홈으로</a>' +
-      '<button type="button" class="btn btn-ghost" data-act="bkNew">다른 날짜로 다시 신청</button>' +
+      '<a class="btn btn-ghost" href="#/mybook">내 예약 확인 · 변경 · 취소</a>' +
       '</main>' + tabbar('book') + '</div>';
+  }
+  // ---------- 내 예약: 확인 · 변경 · 취소 ----------
+  function newMy() {
+    var bk = load('chil-booking', null) || {};
+    return { name: bk.name || '', phone: bk.phone || '', list: null, busy: false, err: '', edit: null, sched: null, loading: false, changeDays: 3 };
+  }
+  function myFind() {
+    var m = S.my;
+    if (!API.ready) { m.err = '아직 서버 연결 전이에요.'; return render(); }
+    m.busy = true; m.err = ''; render();
+    API.post({ action: 'myBookings', name: m.name.trim(), phone: m.phone }).then(function (j) {
+      m.list = j.bookings || []; m.changeDays = j.changeDays || 3;
+      save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: m.name.trim(), phone: m.phone, day: m.list[0] ? m.list[0].day : '' }));
+    }).catch(function () { m.err = '예약을 불러오지 못했어요. 잠시 뒤 다시 눌러주세요.'; })
+      .then(function () { m.busy = false; render(); });
+  }
+  var MY_ERR = { locked: '시공일이 가까워서 앱에서는 바꿀 수 없어요. 전화로 말씀해 주세요.', lead: '오늘부터 ' + BOOK.changeLeadDays + '일 뒤 날짜부터 고를 수 있어요.', full: '그날은 마감됐어요. 다른 날짜를 골라주세요.', auth: '이름과 연락처가 예약할 때와 달라요.', cancelled: '이미 취소된 예약이에요.' };
+  function viewMy() {
+    var m = S.my, phone = BIZ.phone && BIZ.phone.indexOf('[') < 0 ? BIZ.phone : '';
+    var top = '<div class="screen with-tabbar">' + topbar('내 예약') + '<main class="content">';
+    var end = '</main>' + tabbar('book') + '</div>';
+    if (m.edit) return '<div class="screen with-footer">' + topbar(m.edit.isAS ? 'A/S 신청 수정' : '예약 바꾸기') + '<main class="content">' + (m.edit.isAS ? viewMyEditAS() : viewMyEdit()) + '</main>' +
+      '<div class="footer-bar">' + (m.edit.isAS ? '' : '<div class="sum-line"><span class="l">시공일</span><span class="r">' + esc(dayLabel(m.edit.day)) + '</span></div>') +
+      '<div class="row" style="gap:8px"><button type="button" class="btn btn-ghost" style="flex:1" data-act="myEditClose">닫기</button><button type="button" class="btn btn-primary" style="flex:2" data-act="mySave"' + (m.busy ? ' disabled' : '') + '>' + (m.busy ? '저장 중…' : '바꾼 내용 저장') + '</button></div></div></div>';
+    var find = '<section class="card"><h2>예약할 때 적은 이름 · 연락처</h2>' +
+      '<label class="field" for="m-name">이름<input class="input" id="m-name" type="text" autocomplete="name" placeholder="홍길동" value="' + esc(m.name) + '" data-bind="my.name"></label>' +
+      '<label class="field" for="m-phone">연락처<input class="input" id="m-phone" type="tel" inputmode="numeric" autocomplete="tel" placeholder="010-0000-0000" value="' + esc(m.phone) + '" data-bind="my.phone" data-fmt="phone"></label>' +
+      (m.err ? '<p class="note-err" role="alert">' + esc(m.err) + '</p>' : '') +
+      '<button type="button" class="btn btn-primary" data-act="myFind"' + (m.busy ? ' disabled' : '') + '>' + (m.busy ? '찾는 중…' : '내 예약 찾기') + '</button></section>';
+    if (m.list === null) return top + '<div class="callout">시공일 예약과 A/S 신청을 확인하고 <b>날짜 변경 · 내용 수정 · 취소</b>를 할 수 있어요.</div>' + find + end;
+    var html = top;
+    if (m.err) html += '<p class="note-err" role="alert">' + esc(m.err) + '</p>';
+    if (!m.list.length) html += '<div class="empty"><b>확인할 예약 · A/S 신청이 없어요</b><span>이름과 연락처를 예약할 때와 똑같이 적었는지 확인해 주세요.</span></div>' + find;
+    m.list.forEach(function (b) {
+      var addr = b.apt + (b.dong ? ' ' + b.dong + '동' : '') + (b.ho ? ' ' + b.ho + '호' : '');
+      var line = function (k, v) { return v ? '<div class="my-row"><span>' + k + '</span><b>' + esc(v) + '</b></div>' : ''; };
+      if (b.kind === 'AS') {
+        html += '<section class="card my-bk"><div class="top"><b style="font-size:18px"><span class="rg as" style="vertical-align:3px">A/S</span> ' + esc(b.day ? dayLabel(b.day) + ' 방문' : '방문 일정 조율 중') + '</b><span class="st ' + (b.status === '확정' ? 'st-ok' : 'st-wait') + '">' + (b.status === '확정' ? '방문 확정' : '접수됨') + '</span></div>' +
+          '<div class="my-rows">' + line('주소', addr) + line('증상', b.symptom) + line('내용', b.memo) + line('시공 시기', b.when) + '</div>' +
+          ((b.photos || []).length ? '<span class="bk-photos">' + b.photos.map(function (u, i) { return '<a href="' + esc(u) + '" target="_blank" rel="noopener"><img src="' + esc(u) + '=w400" alt="A/S 사진 ' + (i + 1) + '" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=\'' + esc(u) + '\'"></a>'; }).join('') + '</span>' : '') +
+          (b.locked ? '<div class="callout">방문일이 가까워서 앱에서는 바꿀 수 없어요. ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 주세요.</div>' :
+            '<div class="row" style="gap:8px"><button type="button" class="btn btn-primary" style="flex:2;min-height:48px" data-act="myEdit" data-v="' + esc(b.id) + '">내용 · 사진 수정</button><button type="button" class="btn btn-ghost" style="flex:1;min-height:48px;color:var(--err)" data-act="myCancel" data-v="' + esc(b.id) + '">신청 취소</button></div>') +
+          '</section>';
+        return;
+      }
+      html += '<section class="card my-bk"><div class="top"><b style="font-size:18px">' + esc(dayLabel(b.day)) + '</b><span class="st ' + (b.status === '확정' ? 'st-ok' : 'st-wait') + '">' + (b.status === '확정' ? '예약 확정' : '시간 조율 중') + '</span></div>' +
+        '<div class="my-rows">' + line('주소', addr) + line('시공 제품', b.product) + line('색상', b.color) + line('출입 방법', b.access) + line('줄눈 시공', b.julnun) + line('입주청소', b.clean) + line('남길 말', b.memo) + '</div>' +
+        (b.locked ? '<div class="callout">시공 ' + m.changeDays + '일 전부터는 앱에서 바꿀 수 없어요. ' + (phone ? '<b>' + esc(phone) + '</b>로 ' : '') + '전화 주세요.</div>' :
+          '<div class="row" style="gap:8px"><button type="button" class="btn btn-primary" style="flex:2;min-height:48px" data-act="myEdit" data-v="' + esc(b.id) + '">날짜 · 내용 바꾸기</button><button type="button" class="btn btn-ghost" style="flex:1;min-height:48px;color:var(--err)" data-act="myCancel" data-v="' + esc(b.id) + '">예약 취소</button></div>') +
+        '</section>';
+    });
+    if (m.list.length) html += '<p class="hint" style="text-align:center">날짜를 바꾸면 칠통령에서 다시 연락드려 시간을 정해요.<br>시공 ' + m.changeDays + '일 전까지 앱에서 바꿀 수 있어요.</p>' +
+      '<button type="button" class="btn btn-ghost" data-act="myReset">다른 이름 · 번호로 찾기</button>';
+    return html + end;
+  }
+  function viewMyEdit() {
+    var e = S.my.edit;
+    return '<section class="card" style="gap:10px"><h2>시공 날짜</h2>' + bookCalendar(e, 'my', BOOK.changeLeadDays) +
+      '<div class="row" style="gap:14px;font-size:12px;color:var(--muted)"><span class="row" style="gap:6px"><i class="lg lg-open"></i>예약 가능</span><span class="row" style="gap:6px"><i class="lg lg-full"></i>마감</span><span class="row" style="gap:6px"><i class="lg lg-off"></i>선택 불가</span></div>' +
+      (e.day !== e.orig.day ? '<p class="hint" style="color:var(--err)">' + esc(dayLabel(e.orig.day)) + ' → <b>' + esc(dayLabel(e.day)) + '</b> 로 바뀌어요. 칠통령에서 다시 연락드려 시간을 정해요.</p>' : '<p class="hint">날짜는 그대로 두고 아래 내용만 바꿔도 돼요.</p>') + '</section>' +
+      '<section class="card"><h2>시공 제품 · 색상</h2>' + productColorFields(e, 'my.edit') + '</section>' +
+      '<section class="card"><h2>출입 · 일정 · 남길 말</h2>' + extraFields(e, 'my.edit', 'me') + '</section>' +
+      (S.my.err ? '<p class="note-err" role="alert" style="font-size:13px">' + esc(S.my.err) + '</p>' : '');
+  }
+  function viewMyEditAS() {
+    var e = S.my.edit;
+    return '<div class="callout">방문 날짜는 칠통령에서 연락드려 정해요. 증상 · 내용 · 사진만 고칠 수 있어요.</div>' +
+      '<section class="card"><h2>어떤 문제가 있나요?</h2><div class="wrap">' +
+      AS_SYMPTOMS.map(function (x) { return chip(x[1], !!e.sym[x[0]], 'mySym', ' data-v="' + x[0] + '"', 'soft'); }).join('') + '</div>' +
+      '<label class="field" for="me-memo">자세한 내용<textarea class="textarea" id="me-memo" rows="3" data-bind="my.edit.memo">' + esc(e.memo) + '</textarea></label>' +
+      '<div class="field"><span>사진 (최대 3장)</span><div class="as-photos">' +
+      e.photos.map(function (p, i) { var src = /^data:/.test(p) ? p : p + '=w400'; return '<div class="as-ph"><img src="' + esc(src) + '" alt="사진 ' + (i + 1) + '" referrerpolicy="no-referrer"><button type="button" aria-label="사진 ' + (i + 1) + ' 빼기" data-act="myPhotoDel" data-v="' + i + '">' + I.close + '</button></div>'; }).join('') +
+      (e.photos.length < 3 ? '<label class="as-add">' + I.camera + '<span>사진 추가</span><input type="file" accept="image/*" aria-label="문제 부분 사진" data-file="myPhoto"></label>' : '') + '</div></div>' +
+      '<label class="field" for="me-when">시공받은 시기 (선택)<input class="input" id="me-when" type="text" placeholder="예) 2025년 3월쯤" value="' + esc(e.when) + '" data-bind="my.edit.when"></label></section>' +
+      (S.my.err ? '<p class="note-err" role="alert" style="font-size:13px">' + esc(S.my.err) + '</p>' : '');
   }
   function myBookingCard() {
     var bk = load('chil-booking', null);
     if (!bk || !bk.day) return '';
     var p = bk.day.split('-'), dt = new Date(+p[0], +p[1] - 1, +p[2]), t0 = new Date(); t0.setHours(0, 0, 0, 0);
     if (dt < t0) return '';
-    return '<a class="card" href="#/book" style="flex-direction:row;align-items:center;gap:12px;text-decoration:none;color:inherit"><span style="color:var(--green)">' + I.cal + '</span><span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">내 시공 예약 · ' + esc(dayLabel(bk.day)) + '</b><span class="hint">시간은 칠통령에서 연락드려 정해요</span></span></a>';
+    return '<a class="card" href="#/mybook" style="flex-direction:row;align-items:center;gap:12px;text-decoration:none;color:inherit"><span style="color:var(--green)">' + I.cal + '</span><span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">내 시공 예약 · ' + esc(dayLabel(bk.day)) + '</b><span class="hint">눌러서 확인 · 날짜 변경 · 취소</span></span>' + I.next + '</a>';
   }
 
   // ======================================================
@@ -506,6 +612,7 @@
     var phone = BIZ.phone && BIZ.phone.indexOf('[') < 0 ? BIZ.phone : '';
     return '<div class="screen with-footer">' + topbar('예약') + '<main class="content">' + bookSeg('as') +
       '<div class="callout">칠통령에서 시공한 곳에 문제가 생겼나요? <b>증상과 사진</b>을 남겨주시면 확인 후 칠통령에서 연락드려 <b>방문 일정을 잡아드려요</b>.<br><span style="display:block;margin-top:6px">A/S는 시공 일정 사이에 방문해야 해서 <b>일정을 잡기까지 시간이 걸릴 수 있어요.</b> 너그러운 양해 부탁드려요.</span></div>' +
+      '<a class="card my-link" href="#/mybook"><span style="color:var(--green)">' + I.wrench + '</span><span style="flex:1;min-width:0"><b>이미 신청하셨나요?</b><span class="hint">내 A/S 신청 확인 · 수정 · 취소</span></span>' + I.next + '</a>' +
       '<section class="card"><h2>1. 어떤 문제가 있나요?</h2><div class="wrap">' +
       AS_SYMPTOMS.map(function (x) { return chip(x[1], !!a.sym[x[0]], 'asSym', ' data-v="' + x[0] + '"', 'soft'); }).join('') + '</div>' +
       '<label class="field" for="a-memo">자세한 내용<textarea class="textarea" id="a-memo" rows="3" placeholder="예) 다용도실 천장 모서리가 들떠서 벗겨지고 있어요." data-bind="as.memo">' + esc(a.memo) + '</textarea></label>' +
@@ -534,7 +641,7 @@
       '<div class="done-box"><div class="mark">' + I.ok + '</div><h2>A/S 신청이 접수됐어요</h2><p>보내주신 증상과 사진을 확인하고<br>칠통령에서 ' + esc(d.phone) + ' 번호로 연락드려<br>방문 일정을 잡아드릴게요.</p><p style="font-size:13px;margin-top:10px">시공 일정 사이에 방문하다 보니 일정을 잡기까지<br>시간이 걸릴 수 있어요. 양해 부탁드려요.</p></div>' +
       (d.sendErr ? '<div class="callout" role="alert" style="color:var(--err)">' + esc(d.sendErr) + '</div>' : '') +
       '<a class="btn btn-primary" href="#/home">홈으로</a>' +
-      '<button type="button" class="btn btn-ghost" data-act="asNew">다시 신청하기</button>' +
+      '<a class="btn btn-ghost" href="#/mybook">내 A/S 신청 확인 · 수정</a>' +
       '</main>' + tabbar('book') + '</div>';
   }
 
@@ -880,8 +987,11 @@
       return '<div class="bk-item"' + (tc ? ' style="box-shadow:inset 5px 0 0 ' + tc.color + '"' : '') + '><div class="top"><b>' + (b.kind === 'AS' ? '<span class="rg as">A/S</span>' : '') + (b.region ? '<span class="rg">' + esc(b.region) + '</span>' : '') + esc(b.day ? dayLabel(b.day) : '일정 미정') + '</b><span class="st ' + (BK_ST[b.status] || 'st-wait') + '">' + esc(b.status || '접수') + '</span></div>' +
         '<div class="meta"><b style="color:var(--ink)">' + esc(b.name) + '</b> · ' + esc(b.phone) + '<br>' + esc(addr) + ' · ' + esc((b.services || []).join(', ')) +
         (b.symptom ? '<br><b style="color:var(--err)">증상: ' + esc(b.symptom) + '</b>' : '') + (b.when ? '<br>시공 시기: ' + esc(b.when) : '') +
+        (b.product || b.color ? '<br>제품·색상: ' + esc([b.product, b.color].filter(Boolean).join(' · ')) : '') + (b.access ? '<br>출입: ' + esc(b.access) : '') +
+        (b.julnun ? '<br>줄눈: ' + esc(b.julnun) : '') + (b.clean ? '<br>입주청소: ' + esc(b.clean) : '') + (b.callTime ? '<br>통화: ' + esc(b.callTime) : '') +
         (b.quote ? '<br>견적: ' + esc(b.quote) : '') + (b.memo ? '<br>' + (b.kind === 'AS' ? '내용' : '남긴 말') + ': ' + esc(b.memo) : '') +
         ((b.photos || []).length ? '<span class="bk-photos">' + b.photos.map(function (u, i) { return '<a href="' + esc(u) + '" target="_blank" rel="noopener" aria-label="사진 ' + (i + 1) + '번 크게 보기"><img src="' + esc(u) + '=w400" alt="A/S 사진 ' + (i + 1) + '" loading="lazy" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src=\'' + esc(u) + '\'"></a>'; }).join('') + '</span>' : '') +
+        (b.edited ? '<br><span style="color:#B45309;font-weight:600">고객 수정: ' + esc(String(b.edited).split('\n').pop()) + '</span>' : '') +
         '<br><span style="color:' + (b.cell ? 'var(--green)' : 'var(--err)') + '">' + (b.cell ? '일정표 ' + esc(b.cell) + ' 칸에 적었어요' : (b.status === '취소' ? '일정표에서 지웠어요' : !b.day ? '방문 날짜를 정하면 일정표에 적혀요' : '일정표에 이 날짜 칸이 없어 예약 탭에만 있어요')) + '</span></div>' +
         (b.kind === 'AS' && b.status !== '취소' ? '<div class="as-day"><input class="input" type="date" id="asd-' + esc(b.id) + '" aria-label="방문 날짜" value="' + esc(b.day || '') + '"><button type="button" class="chip" aria-pressed="true" data-act="asSetDay" data-v="' + esc(b.id) + '">' + (b.day ? '날짜 바꾸기' : '이 날로 일정 잡기') + '</button></div>' : '') +
         (b.status !== '취소' && (a.techs || []).length ? '<div class="techs"><span>기사님</span>' + a.techs.map(function (t) {
@@ -1022,7 +1132,7 @@
     bkPrev: function () { var v = S.book.view; S.book.view = v.m === 0 ? { y: v.y - 1, m: 11 } : { y: v.y, m: v.m - 1 }; render(); },
     bkNext: function () { var v = S.book.view; S.book.view = v.m === 11 ? { y: v.y + 1, m: 0 } : { y: v.y, m: v.m + 1 }; render(); },
     bkDay: function (el) { S.book.day = el.dataset.v; S.book.err = ''; render(); },
-    bkNew: function () { S.book = newBooking(); loadSchedule(); render(true); },
+    bkNew: function () { S.book = newBooking(); loadSchedule(null, null, true); render(true); },
     bkSend: function () {
       var b = S.book, fail = function (m) { b.err = m; render(); };
       var svcs = ['탄성코트'];
@@ -1034,8 +1144,9 @@
       if (!b.agree) return fail('개인정보 수집·이용에 동의해 주세요.');
       var rec = {
         day: b.day, services: svcs, name: b.name.trim(), phone: b.phone, region: b.region.trim(), apt: b.apt.trim(), dong: b.dong, ho: b.ho, memo: b.memo.trim(),
+        product: b.product, access: b.access, julnun: b.julnun.trim(), clean: b.clean.trim(),
         quote: b.quote ? (b.quote.spots || []).join(', ') + (b.quote.estimate ? ' / ' + b.quote.estimate : '') : '', moveIn: S.home.date || '',
-        color: b.quote && b.quote.color ? b.quote.color : '', spots: b.quote ? (b.quote.spots || []).join(', ') : ''
+        color: b.color || (b.quote && b.quote.color ? b.quote.color : ''), spots: b.quote ? (b.quote.spots || []).join(', ') : ''
       };
       var finish = function (id, sendErr) {
         b.sending = false;
@@ -1047,9 +1158,65 @@
       b.sending = true; b.err = ''; render();
       API.post({ action: 'book', data: rec }).then(function (j) { finish(j.id); }).catch(function (e) {
         b.sending = false;
-        if (e && e.message === 'full') { b.day = null; b.sched = null; loadSchedule(); return fail('방금 다른 예약으로 그날이 마감됐어요. 다른 날짜를 골라주세요.'); }
+        if (e && e.message === 'full') { b.day = null; b.sched = null; loadSchedule(null, null, true); return fail('방금 다른 예약으로 그날이 마감됐어요. 다른 날짜를 골라주세요.'); }
         fail('예약을 보내지 못했어요. 인터넷 연결을 확인하고 다시 눌러주세요.');
       });
+    },
+    pick: function (el) { var k = el.dataset.k, v = el.dataset.v, parts = k.split('.'), o = S; for (var i = 0; i < parts.length - 1; i++) o = o[parts[i]]; o[parts[parts.length - 1]] = o[parts[parts.length - 1]] === v ? '' : v; render(); },
+    myFind: function () {
+      var m = S.my;
+      if (!m.name.trim()) { m.err = '이름을 적어주세요.'; return render(); }
+      if (m.phone.replace(/\D/g, '').length < 10) { m.err = '연락처를 정확히 적어주세요.'; return render(); }
+      myFind();
+    },
+    myReset: function () { S.my.list = null; S.my.err = ''; render(); },
+    myEdit: function (el) {
+      var m = S.my, b = (m.list || []).find(function (x) { return x.id === el.dataset.v; });
+      if (!b) return;
+      if (b.kind === 'AS') {
+        var sym = {}; String(b.symptom || '').split(', ').forEach(function (t) { var f = AS_SYMPTOMS.find(function (x) { return x[1] === t; }); if (f) sym[f[0]] = true; });
+        m.edit = { id: b.id, isAS: true, orig: b, sym: sym, memo: b.memo, when: b.when, photos: (b.photos || []).slice() };
+        m.err = ''; return render(true);
+      }
+      var p = b.day.split('-');
+      m.edit = { id: b.id, orig: b, day: b.day, view: { y: +p[0], m: +p[1] - 1 }, product: b.product, color: b.color, access: b.access, julnun: b.julnun, clean: b.clean, memo: b.memo, sched: null, loading: false };
+      m.err = ''; loadSchedule(m.edit, 'mybook'); render(true);
+    },
+    myEditClose: function () { S.my.edit = null; S.my.err = ''; render(true); },
+    myPrev: function () { var e = S.my.edit, v = e.view; e.view = v.m === 0 ? { y: v.y - 1, m: 11 } : { y: v.y, m: v.m - 1 }; render(); },
+    myNext: function () { var e = S.my.edit, v = e.view; e.view = v.m === 11 ? { y: v.y + 1, m: 0 } : { y: v.y, m: v.m + 1 }; render(); },
+    myDay: function (el) { S.my.edit.day = el.dataset.v; S.my.err = ''; render(); },
+    mySym: function (el) { var e = S.my.edit; e.sym[el.dataset.v] = !e.sym[el.dataset.v]; render(); },
+    myPhotoDel: function (el) { S.my.edit.photos.splice(+el.dataset.v, 1); render(); },
+    mySave: function () {
+      var m = S.my, e = m.edit;
+      if (e.isAS) {
+        var syms = AS_SYMPTOMS.filter(function (x) { return e.sym[x[0]]; }).map(function (x) { return x[1]; });
+        if (!syms.length && !(e.memo || '').trim()) { m.err = '어떤 문제인지 골라주거나 적어주세요.'; return render(); }
+      }
+      var data = e.isAS ? { symptom: syms.join(', '), memo: (e.memo || '').trim(), when: (e.when || '').trim(), photos: e.photos.slice() } : { day: e.day, product: e.product, color: e.color, access: e.access, julnun: (e.julnun || '').trim(), clean: (e.clean || '').trim(), memo: (e.memo || '').trim() };
+      m.busy = true; m.err = ''; render();
+      API.post({ action: 'myUpdate', id: e.id, name: m.name.trim(), phone: m.phone, data: data }).then(function (j) {
+        m.busy = false; m.edit = null; schedP = null;
+        m.list = m.list.map(function (x) { return x.id === j.booking.id ? j.booking : x; });
+        save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { day: j.booking.day }));
+        toast(j.moved ? dayLabel(j.booking.day) + '로 날짜를 바꿨어요' : e.isAS ? 'A/S 신청 내용을 고쳤어요' : '예약 내용을 바꿨어요'); render(true);
+      }).catch(function (er) {
+        m.busy = false; m.err = MY_ERR[er && er.message] || '저장하지 못했어요. 인터넷 연결을 확인하고 다시 눌러주세요.';
+        if (er && er.message === 'full') { e.sched = null; loadSchedule(e, 'mybook', true); }
+        render();
+      });
+    },
+    myCancel: function (el) {
+      var m = S.my, b = (m.list || []).find(function (x) { return x.id === el.dataset.v; });
+      if (!b || !confirm(b.kind === 'AS' ? 'A/S 신청을 취소할까요?' : dayLabel(b.day) + ' 시공 예약을 취소할까요?')) return;
+      m.busy = true; m.err = ''; render();
+      API.post({ action: 'myCancel', id: b.id, name: m.name.trim(), phone: m.phone }).then(function () {
+        m.list = m.list.filter(function (x) { return x.id !== b.id; }); schedP = null;
+        var bk = load('chil-booking', null); if (bk && bk.day === b.day) save('chil-booking', Object.assign(bk, { day: '' }));
+        toast(b.kind === 'AS' ? 'A/S 신청을 취소했어요' : '예약을 취소했어요');
+      }).catch(function (er) { m.err = MY_ERR[er && er.message] || '취소하지 못했어요. 다시 눌러주세요.'; })
+        .then(function () { m.busy = false; render(); });
     },
     asSym: function (el) { var k = el.dataset.v; S.as.sym[k] = !S.as.sym[k]; S.as.err = ''; render(); },
     asPrev: function () { var v = S.as.view; S.as.view = v.m === 0 ? { y: v.y - 1, m: 11 } : { y: v.y, m: v.m - 1 }; render(); },
@@ -1068,7 +1235,7 @@
       if (!a.agree) return fail('개인정보 수집·이용에 동의해 주세요.');
       var rec = { day: '', services: ['A/S'], kind: 'AS', name: a.name.trim(), phone: a.phone, region: a.region.trim(), apt: a.apt.trim(), dong: a.dong, ho: a.ho,
         symptom: syms.join(', '), memo: a.memo.trim(), when: a.when.trim(), photos: a.photos.slice() };
-      var finish = function (sendErr) { a.sending = false; a.done = { day: rec.day, phone: rec.phone, sendErr: sendErr || '' }; render(true); };
+      var finish = function (sendErr) { a.sending = false; save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: rec.name, phone: rec.phone })); if (S.my) S.my.list = null; a.done = { day: rec.day, phone: rec.phone, sendErr: sendErr || '' }; render(true); };
       if (!API.ready) return finish('아직 서버(구글 시트) 연결 전이라 A/S 신청이 칠통령에 전달되지 않았어요.');
       a.sending = true; a.err = ''; render();
       API.post({ action: 'as', data: rec }).then(function () { finish(); }).catch(function (e) {
@@ -1172,7 +1339,7 @@
         a.closed = a.closed.filter(function (x) { return x !== d; }); S.book = null; toast(dayLabel(d) + ' 마감을 풀었어요'); render();
       }).catch(function () { toast('마감을 풀지 못했어요'); });
     },
-    adminNew: function () { S.admin.form = { apt: '', svcs: ['탄성코트'], color: '퓨어화이트', memo: '', before: '', after: '', err: '', busy: false }; render(); },
+    adminNew: function () { S.admin.form = { apt: '', svcs: ['탄성코트'], color: '라이트그레이', memo: '', before: '', after: '', err: '', busy: false }; render(); },
     adminClose: function () { S.admin.form = null; render(); },
     adminSvc: function (el) { var f = S.admin.form, v = el.dataset.v, i = f.svcs.indexOf(v); if (i >= 0) f.svcs.splice(i, 1); else f.svcs.push(v); render(); },
     adminColor: function (el) { var f = S.admin.form; f.color = f.color === el.dataset.v ? '' : el.dataset.v; render(); },
@@ -1213,6 +1380,7 @@
       if (S.route === 'contract') S.contract.err = '';
       if (S.route === 'book') S.book.err = '';
       if (S.route === 'as') S.as.err = '';
+      if (S.route === 'mybook') S.my.err = '';
       // 금액·형식이 바뀌는 칸만 다시 그림 (나머지는 그대로 두어 입력이 끊기지 않게)
       if (fmt === 'live') { render(); return; }
       if (fmt === 'phone' || fmt === 'money') {
@@ -1250,6 +1418,11 @@
         coatRefresh();
       });
     }
+    if (fk === 'myPhoto') {
+      HJCoat.shrink(file, 1280).then(function (url) { var e = S.my && S.my.edit; if (e && e.photos.length < 3) e.photos.push(url); render(); })
+        .catch(function () { S.my.err = '사진을 열 수 없어요. 다른 사진으로 해볼까요?'; render(); });
+      return;
+    }
     if (fk === 'asPhoto') {
       HJCoat.shrink(file, 1280).then(function (url) { if (S.as.photos.length < 3) S.as.photos.push(url); S.as.err = ''; render(); })
         .catch(function () { S.as.err = '사진을 열 수 없어요. 다른 사진으로 해볼까요?'; render(); });
@@ -1274,4 +1447,5 @@
   onEnter();
   if (S.route === 'home' && API.ready) loadCases();
   render(true);
+  if (API.ready && S.route !== 'admin') setTimeout(function () { fetchSchedule().catch(function () {}); }, 400); // 예약 화면용 마감 정보 미리 받기
 })();

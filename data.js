@@ -13,7 +13,6 @@ window.HJ = (function () {
 
   // [id, 이름, 색, 한마디]
   var COLORS = [
-    ['white', '퓨어화이트', '#F3F2EE', '가장 많이 골라요'],
     ['lgray', '라이트그레이', '#D4D7D7', '때가 덜 보여요'],
     ['violet', '바이올렛', '#C9B8E3', '산뜻한 포인트']
   ];
@@ -50,8 +49,7 @@ window.HJ = (function () {
 
   // 서버(구글 시트)에 사례가 하나도 없을 때만 보여주는 예시
   var SAMPLE_CASES = [
-    { id: 'sample1', apt: '[예시] 칠통령센트럴', svcs: ['탄성코트'], color: '퓨어화이트', memo: '전후 비교 예시예요. 사진 위를 좌우로 밀어보세요.', before: 'assets/case-before.jpg', after: 'assets/case-white.jpg', date: '2026.10.12' },
-    { id: 'sample2', apt: '[예시] 칠통령센트럴', svcs: ['탄성코트'], color: '바이올렛', memo: '같은 단지 바이올렛 탄성코트 예시예요.', before: 'assets/case-before.jpg', after: 'assets/case-violet.jpg', date: '2026.10.12' }
+    { id: 'sample2', apt: '[예시] 칠통령센트럴', svcs: ['탄성코트'], color: '바이올렛', memo: '전후 비교 예시예요. 사진 위를 좌우로 밀어보세요.', before: 'assets/case-before.jpg', after: 'assets/case-violet.jpg', date: '2026.10.12' }
   ];
 
   function man(n) { return Number(n || 0).toLocaleString('ko-KR') + '만원'; }

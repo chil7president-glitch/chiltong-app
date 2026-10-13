@@ -1,6 +1,6 @@
 /* 칠통령 서비스워커 — 화면 파일을 저장해 두어 빠르게 열리고, 인터넷이 약해도 기본 화면은 보이게 합니다.
    사이트를 고친 뒤에는 VERSION 숫자를 하나 올려주세요. */
-var VERSION = 'chil-v32';
+var VERSION = 'chil-v37';
 var FILES = [
   './', './index.html', './styles.css', './config.js', './data.js', './sites.js', './pdf.js', './coat.js', './app.js', './privacy.html', './manifest.webmanifest',
   './assets/logo.png', './assets/mark.png', './assets/icon-192.png', './assets/icon-512.png', './assets/apple-touch-icon.png', './assets/favicon-32.png',

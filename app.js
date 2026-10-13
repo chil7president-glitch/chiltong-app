@@ -522,7 +522,12 @@
     m.busy = true; m.err = ''; render();
     API.post({ action: 'myBookings', name: m.name.trim(), phone: m.phone }).then(function (j) {
       m.list = j.bookings || []; m.changeDays = j.changeDays || 3;
-      save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: m.name.trim(), phone: m.phone, day: m.list[0] ? m.list[0].day : '' }));
+      syncHomeCards(m.list);
+      if (m.openId) { // A/S 신청 완료 화면에서 왔으면 그 신청의 수정 화면을 바로 열어요
+        var want = m.list.find(function (x) { return x.id === m.openId; }) || m.list.filter(function (x) { return x.kind === 'AS'; }).pop();
+        m.openId = null;
+        if (want && !want.locked) { m.busy = false; ACT.myEdit({ dataset: { v: want.id } }); return; }
+      }
     }).catch(function () { m.err = '예약을 불러오지 못했어요. 잠시 뒤 다시 눌러주세요.'; })
       .then(function () { m.busy = false; render(); });
   }
@@ -586,12 +591,25 @@
       '<label class="field" for="me-when">시공받은 시기 (선택)<input class="input" id="me-when" type="text" placeholder="예) 2025년 3월쯤" value="' + esc(e.when) + '" data-bind="my.edit.when"></label></section>' +
       (S.my.err ? '<p class="note-err" role="alert" style="font-size:13px">' + esc(S.my.err) + '</p>' : '');
   }
+  function homeCard(icon, title, hint) {
+    return '<a class="card" href="#/mybook" style="flex-direction:row;align-items:center;gap:12px;text-decoration:none;color:inherit"><span style="color:var(--green)">' + icon + '</span><span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">' + title + '</b><span class="hint">' + hint + '</span></span>' + I.next + '</a>';
+  }
+  function notPast(day) {
+    var p = String(day).split('-'), dt = new Date(+p[0], +p[1] - 1, +p[2]), t0 = new Date(); t0.setHours(0, 0, 0, 0);
+    return dt >= t0;
+  }
   function myBookingCard() {
-    var bk = load('chil-booking', null);
-    if (!bk || !bk.day) return '';
-    var p = bk.day.split('-'), dt = new Date(+p[0], +p[1] - 1, +p[2]), t0 = new Date(); t0.setHours(0, 0, 0, 0);
-    if (dt < t0) return '';
-    return '<a class="card" href="#/mybook" style="flex-direction:row;align-items:center;gap:12px;text-decoration:none;color:inherit"><span style="color:var(--green)">' + I.cal + '</span><span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:14px">내 시공 예약 · ' + esc(dayLabel(bk.day)) + '</b><span class="hint">눌러서 확인 · 날짜 변경 · 취소</span></span>' + I.next + '</a>';
+    var bk = load('chil-booking', null), as = load('chil-as', null), html = '';
+    if (bk && bk.day && notPast(bk.day)) html += homeCard(I.cal, '내 시공 예약 · ' + esc(dayLabel(bk.day)), '눌러서 확인 · 날짜 변경 · 취소');
+    if (as && as.n && (!as.day || notPast(as.day)))
+      html += homeCard(I.wrench, '내 A/S 신청 · ' + (as.day ? esc(dayLabel(as.day)) + ' 방문' : '방문 일정 조율 중') + (as.n > 1 ? ' 외 ' + (as.n - 1) + '건' : ''), '눌러서 확인 · 내용 수정 · 취소');
+    return html;
+  }
+  // 내 예약을 불러오거나 바꾼 뒤 홈 카드 정보를 맞춰요
+  function syncHomeCards(list) {
+    var books = list.filter(function (x) { return x.kind !== 'AS'; }), ass = list.filter(function (x) { return x.kind === 'AS'; });
+    save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: S.my.name.trim(), phone: S.my.phone, day: books[0] ? books[0].day : '' }));
+    save('chil-as', ass.length ? { n: ass.length, day: ass[0].day || '' } : null);
   }
 
   // ======================================================
@@ -641,7 +659,7 @@
       '<div class="done-box"><div class="mark">' + I.ok + '</div><h2>A/S 신청이 접수됐어요</h2><p>보내주신 증상과 사진을 확인하고<br>칠통령에서 ' + esc(d.phone) + ' 번호로 연락드려<br>방문 일정을 잡아드릴게요.</p><p style="font-size:13px;margin-top:10px">시공 일정 사이에 방문하다 보니 일정을 잡기까지<br>시간이 걸릴 수 있어요. 양해 부탁드려요.</p></div>' +
       (d.sendErr ? '<div class="callout" role="alert" style="color:var(--err)">' + esc(d.sendErr) + '</div>' : '') +
       '<a class="btn btn-primary" href="#/home">홈으로</a>' +
-      '<a class="btn btn-ghost" href="#/mybook">내 A/S 신청 확인 · 수정</a>' +
+      '<button type="button" class="btn btn-ghost" data-act="asOpenMine">내 A/S 신청 확인 · 수정</button>' +
       '</main>' + tabbar('book') + '</div>';
   }
 
@@ -1005,7 +1023,7 @@
       '<div class="section-head"><h2>일정 미정 ' + asWait.length + '건</h2>' + reload + '</div>' +
       (!a.books ? '' : asWait.length ? asWait.map(item).join('') : '<div class="empty"><b>날짜를 정할 A/S가 없어요</b><span>고객이 A/S를 신청하면 여기에 보여요.</span></div>') +
       '<div class="section-head"><h2>방문 예정 A/S ' + upcoming.length + '건</h2>' + (waiting ? '<span class="st st-wait">확정 대기 ' + waiting + '</span>' : '') + '</div>' :
-      '<div class="callout">홈페이지 예약은 시공 일정표의 그 날짜 칸에 바로 적혀요. 기사님을 정하면 칸이 <b>그 기사님 색</b>으로, 정하기 전엔 <b>하늘색</b>이에요. 일정표에서 칸 색을 직접 바꿔도 기사님이 따라 바뀌어요. 전화로 시간을 정한 뒤 <b>확정</b>을 누르고, <b>취소</b>하면 칸이 비워져요. 일정표 칸이 하루 ' + BOOK.perDay + '개 차거나 마감한 날은 고객 달력에 마감으로 보여요.</div>' +
+      '<div class="callout">홈페이지 예약은 시공 일정표의 그 날짜 칸에 바로 적혀요. 기사님을 정하면 칸이 <b>그 기사님 색</b>으로, 정하기 전엔 <b>연한 파랑</b>이에요. 일정표에서 칸 색을 직접 바꿔도 기사님이 따라 바뀌어요. 전화로 시간을 정한 뒤 <b>확정</b>을 누르고, <b>취소</b>하면 칸이 비워져요. 일정표 칸이 하루 ' + BOOK.perDay + '개 차거나 마감한 날은 고객 달력에 마감으로 보여요.</div>' +
       ((a.techs || []).length ? '<section class="card" style="gap:8px"><h2 style="font-size:15px">기사님 색</h2><div class="wrap">' + a.techs.map(function (t) {
         return '<span class="chip tech" aria-pressed="false" style="cursor:default"><i style="background:' + t.color + '"></i>' + esc(t.name) + (t.regions && t.regions.length ? ' · ' + esc(t.regions.join(', ')) : '') + '</span>';
       }).join('') + '</div><span class="hint">예약마다 기사님을 누르면 일정표 칸이 그 색으로 바뀌어요. 맡을 지역을 정해 두면 새 예약이 자동으로 그 기사님 색으로 들어가요.</span></section>' : '') +
@@ -1186,6 +1204,11 @@
     myPrev: function () { var e = S.my.edit, v = e.view; e.view = v.m === 0 ? { y: v.y - 1, m: 11 } : { y: v.y, m: v.m - 1 }; render(); },
     myNext: function () { var e = S.my.edit, v = e.view; e.view = v.m === 11 ? { y: v.y + 1, m: 0 } : { y: v.y, m: v.m + 1 }; render(); },
     myDay: function (el) { S.my.edit.day = el.dataset.v; S.my.err = ''; render(); },
+    asOpenMine: function () { // 방금 신청한 A/S 수정 화면으로 바로 가요
+      var a = S.as, bk = load('chil-booking', {}) || {};
+      S.my = newMy(); S.my.name = a.name.trim() || bk.name || ''; S.my.phone = a.phone || bk.phone || ''; S.my.openId = a.lastId || 'AS';
+      go('mybook');
+    },
     mySym: function (el) { var e = S.my.edit; e.sym[el.dataset.v] = !e.sym[el.dataset.v]; render(); },
     myPhotoDel: function (el) { S.my.edit.photos.splice(+el.dataset.v, 1); render(); },
     mySave: function () {
@@ -1199,7 +1222,7 @@
       API.post({ action: 'myUpdate', id: e.id, name: m.name.trim(), phone: m.phone, data: data }).then(function (j) {
         m.busy = false; m.edit = null; schedP = null;
         m.list = m.list.map(function (x) { return x.id === j.booking.id ? j.booking : x; });
-        save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { day: j.booking.day }));
+        syncHomeCards(m.list);
         toast(j.moved ? dayLabel(j.booking.day) + '로 날짜를 바꿨어요' : e.isAS ? 'A/S 신청 내용을 고쳤어요' : '예약 내용을 바꿨어요'); render(true);
       }).catch(function (er) {
         m.busy = false; m.err = MY_ERR[er && er.message] || '저장하지 못했어요. 인터넷 연결을 확인하고 다시 눌러주세요.';
@@ -1213,7 +1236,7 @@
       m.busy = true; m.err = ''; render();
       API.post({ action: 'myCancel', id: b.id, name: m.name.trim(), phone: m.phone }).then(function () {
         m.list = m.list.filter(function (x) { return x.id !== b.id; }); schedP = null;
-        var bk = load('chil-booking', null); if (bk && bk.day === b.day) save('chil-booking', Object.assign(bk, { day: '' }));
+        syncHomeCards(m.list);
         toast(b.kind === 'AS' ? 'A/S 신청을 취소했어요' : '예약을 취소했어요');
       }).catch(function (er) { m.err = MY_ERR[er && er.message] || '취소하지 못했어요. 다시 눌러주세요.'; })
         .then(function () { m.busy = false; render(); });
@@ -1235,10 +1258,10 @@
       if (!a.agree) return fail('개인정보 수집·이용에 동의해 주세요.');
       var rec = { day: '', services: ['A/S'], kind: 'AS', name: a.name.trim(), phone: a.phone, region: a.region.trim(), apt: a.apt.trim(), dong: a.dong, ho: a.ho,
         symptom: syms.join(', '), memo: a.memo.trim(), when: a.when.trim(), photos: a.photos.slice() };
-      var finish = function (sendErr) { a.sending = false; save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: rec.name, phone: rec.phone })); if (S.my) S.my.list = null; a.done = { day: rec.day, phone: rec.phone, sendErr: sendErr || '' }; render(true); };
+      var finish = function (sendErr) { a.sending = false; save('chil-booking', Object.assign(load('chil-booking', {}) || {}, { name: rec.name, phone: rec.phone })); if (!sendErr) { var oa = load('chil-as', null); save('chil-as', { n: (oa && oa.n || 0) + 1, day: oa && oa.day || '' }); } if (S.my) S.my.list = null; a.done = { day: rec.day, phone: rec.phone, sendErr: sendErr || '' }; render(true); };
       if (!API.ready) return finish('아직 서버(구글 시트) 연결 전이라 A/S 신청이 칠통령에 전달되지 않았어요.');
       a.sending = true; a.err = ''; render();
-      API.post({ action: 'as', data: rec }).then(function () { finish(); }).catch(function (e) {
+      API.post({ action: 'as', data: rec }).then(function (j) { a.lastId = j && j.id; finish(); }).catch(function (e) {
         a.sending = false;
         fail('신청을 보내지 못했어요. 사진 용량이나 인터넷 연결을 확인하고 다시 눌러주세요.');
       });

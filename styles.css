@@ -391,3 +391,23 @@ a:hover { color: var(--green-d); }
 .as-day { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 .as-day .input { flex: 1; min-width: 0; min-height: 40px; }
 .as-day .chip { white-space: nowrap; min-height: 40px; }
+/* ---------- 전국 시공 현장 ---------- */
+.site-hero { background: var(--green); color: #fff; border-radius: 18px; padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 6px; }
+.site-hero .k { font-size: 12px; font-weight: 600; color: #C9D6F2; }
+.site-hero h2 { margin: 0; font-size: 20px; }
+.site-hero .nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.site-hero .nums div { background: rgba(255,255,255,.1); border-radius: 12px; padding: 10px 8px; display: flex; flex-direction: column; gap: 2px; text-align: center; }
+.site-hero .nums b { font-size: 19px; font-variant-numeric: tabular-nums; }
+.site-hero .nums span { font-size: 11px; color: #C9D6F2; }
+.site-g { background: var(--card); border-radius: 14px; overflow: hidden; }
+.site-g summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 16px; }
+.site-g summary::-webkit-details-marker { display: none; }
+.site-g summary b { font-size: 15px; }
+.site-g summary span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.site-g summary::after { content: ''; width: 8px; height: 8px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); margin-left: 4px; flex: none; transition: transform .15s; }
+.site-g[open] summary::after { transform: rotate(-135deg); }
+.site-g summary span { margin-left: auto; }
+.site-g ul { list-style: none; margin: 0; padding: 0 16px 10px; }
+.site-g li { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line-2); font-size: 14px; }
+.site-g li .n { min-width: 0; }
+.site-g li .u { flex: none; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
